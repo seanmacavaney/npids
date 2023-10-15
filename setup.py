@@ -16,7 +16,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="npids",
-    version="0.0.2",
+    version="0.0.3",
     author="Sean MacAvaney",
     author_email='sean.macavaney@glasgow.ac.uk',
     description="",

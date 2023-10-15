@@ -9,7 +9,7 @@ class FwdIntSequence:
         self.start = start
         self.seed_prev = None
         self.encode_prev = None
-        self.prefix_re = re.compile(r'[0-9]*$')
+        self.prefix_re = re.compile(r'[0-9]+$')
 
     def seed(self, id):
         match = self.prefix_re.search(id)

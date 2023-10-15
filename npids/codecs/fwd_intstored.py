@@ -8,7 +8,7 @@ class FwdIntStored:
     def __init__(self, prefix=None, int_bytes=None):
         self.prefix = prefix
         self.int_bytes = int_bytes
-        self.prefix_re = re.compile(r'[0-9]*$')
+        self.prefix_re = re.compile(r'[0-9]+$')
 
     def seed(self, id):
         match = self.prefix_re.search(id)
