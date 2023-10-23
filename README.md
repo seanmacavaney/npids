@@ -1,6 +1,6 @@
 # npids
 
-This package provides time- and space-efficient bi-directional lookups for identifies.
+This package provides time- and space-efficient bi-directional lookups for identifiers.
 Contents are mmap'd, eliminating most load times and allowing for efficient caching
 through the file system.
 
@@ -59,9 +59,9 @@ flexible, allowing new codecs to be added in the future.
 
 Forward:
 
- - `fixedbytes`: Every item is stored as a fixed number of bytes (with optinoal prefix). This
+ - `fixedbytes`: Every item is stored as a fixed number of bytes (with optional prefix). This
    serves as a fallback if other forward codecs do not work.
- - `intsequence`: A sequence of integes (e.g., 49, 50, 51) is identifed (with optional prefix); only
+ - `intsequence`: A sequence of integers (e.g., 49, 50, 51) is identifed (with optional prefix); only
    metadata about the sequence is stored.
  - `intstored`: Integers are identified (with optional prefix), but they are not in a periodic sequence
    (e.g., 49, 55, 21). The integer values are encoded and stored.
@@ -69,7 +69,7 @@ Forward:
 
 Inverse:
 
- - `hash`: Hashes of every item are stored on disk, enablling O(1) lookups (but with extra storage).
+ - `hash`: Hashes of every item are stored on disk, enabling O(1) lookups (but with extra storage).
    This serves as a fallback if other inverse codecs do not work.
  - `intsequence`: The values only consist of a single forward `intsequence` block; these values can be
    used to compute the indices.
@@ -79,15 +79,15 @@ Inverse:
 ## Benchmarks
 
 The following benchmarks test the speed of building, forward/inverse lookups (10k random lookups,
-both "cold" and "hot"), and the size of the structure. Rows marked with * indicate that the values
+both "cold" and "hot"), and the size of the structure. Rows marked with `*` indicate that the values
 include additional overheads that are not directly related to operation -- namely,
 full engines include content indexing.
 
  - `npids`: This software
- - inmem: A simple Python lookup structure in memory (a list and a dict), backed by a plaintext file
+ - `inmem`: A simple Python lookup structure in memory (a list and a dict), backed by a plain text file
    that is read into memory
- - Terrier: Terrier engine acccessed via the pyterrier package
- - Lucene: Apache Lucene accessed via the pyserini package
+ - `Terrier`: Terrier engine acccessed via the pyterrier package
+ - `Lucene`: Apache Lucene accessed via the pyserini package
 
 The benchmarks show that `npids` is a reasonable choice for performing ID lookups.
 Although it is a bit slower than loading them all into memory, it avoids the
