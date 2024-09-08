@@ -24,9 +24,15 @@ class InvIntStored:
         result = np.full(docnos.shape, -1)
         mask = result != -1
         for codec, offset in zip(self.fwd.codecs, self.fwd.offsets):
-            this_mask = (docnos.astype(f'S{len(codec.fmt.prefix.encode())}') == codec.fmt.prefix.encode()) & ~mask
+            if codec.fmt.prefix:
+              this_mask = (docnos.astype(f'S{len(codec.fmt.prefix.encode())}') == codec.fmt.prefix.encode()) & ~mask
+            else:
+              this_mask = ~mask
             if this_mask.any():
-                target_nums = slice_vectorized(docnos[this_mask], len(codec.fmt.prefix.encode()))
+                if codec.fmt.prefix:
+                  target_nums = slice_vectorized(docnos[this_mask], len(codec.fmt.prefix.encode()))
+                else:
+                  target_nums = docnos[this_mask]
                 this_mask2 = isnumeric(target_nums)
                 target_nums = target_nums[this_mask2].astype(int)
                 this_mask[np.where(this_mask)[0][~this_mask2]] = 0
