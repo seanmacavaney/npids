@@ -66,6 +66,8 @@ class InvLookupBuilder:
                 codecs.inv['intsequence'].build(lookup.fwd, writer)
             elif codecs.inv['intstored'].condition(lookup.fwd):
                 codecs.inv['intstored'].build(lookup.fwd, writer)
+            elif codecs.inv['intsequencemulti'].condition(lookup.fwd):
+                codecs.inv['intsequencemulti'].build(lookup.fwd, writer)
             else:
                 codecs.inv['hash'].build(lookup.fwd, writer)
 

@@ -118,6 +118,9 @@ class Lookup:
                     elif config['format'] == 'intsequence':
                         config.pop('format')
                         inv = codecs.inv['intsequence'](**config)
+                    elif config['format'] == 'intsequencemulti':
+                        config.pop('format')
+                        inv = codecs.inv['intsequencemulti'](**config)
                     elif config['format'] == 'intstored':
                         config.pop('format')
                         inv = codecs.inv['intstored'](**config)
