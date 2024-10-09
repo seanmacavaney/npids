@@ -183,6 +183,8 @@ class FwdLookup:
             else:
                 out_format = 'numpy'
                 idxs_inp = np.array(idxs, dtype=np.uint32)
+                out_shape = idxs_inp.shape
+                idxs_inp = idxs_inp.reshape(-1)
         elif isinstance(idxs, (list, tuple)):
             out_format = 'list'
             idxs_inp = np.array(idxs, dtype=np.uint32)
@@ -211,7 +213,7 @@ class FwdLookup:
         if out_format == 'single':
             return result[0]
         if out_format == 'numpy':
-            return result
+            return result.reshape(out_shape)
         if out_format == 'list':
             return result.tolist()
 
