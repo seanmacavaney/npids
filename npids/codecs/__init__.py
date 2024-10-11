@@ -1,3 +1,5 @@
+__version__ = '0.0.7'
+
 from .fwd_fixedbytes import FwdFixedBytes
 from .fwd_intsequence import FwdIntSequence
 from .fwd_intsequencepad import FwdIntSequencePad
