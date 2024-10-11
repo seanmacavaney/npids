@@ -208,7 +208,7 @@ class FwdLookup:
                     result[m] = d
 
         if not as_bytes:
-            result = result.astype('U')
+            result = np.char.decode(result, encoding='utf8')
 
         if out_format == 'single':
             return result[0]

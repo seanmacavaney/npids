@@ -57,8 +57,9 @@ class InvHash:
         hash_mask = num_buckets - 1
         buckets = np.empty(len(fwd), dtype=np.uint32)
         bidx = 0
-        for batch in chunked(fwd, 10_000):
-            batch = np.array(batch, dtype=f'S')
+        for start_idx in range(0, len(fwd), 10_000):
+            end_idx = min(start_idx+10_000, len(fwd))
+            batch = fwd.lookup(np.arange(start_idx, end_idx), as_bytes=True)
             hashes = fnv1_32(batch)
             buckets[bidx:bidx+batch.shape[0]] = hashes & hash_mask
             bidx += batch.shape[0]
