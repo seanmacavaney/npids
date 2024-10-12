@@ -48,3 +48,6 @@ class InvIntSequence:
             'start': fwd.codecs[0].fmt.start,
             'count': len(fwd),
         })
+
+    def __repr__(self):
+        return f'{self.NAME} [prefix={self.prefix} start={self.start}]'

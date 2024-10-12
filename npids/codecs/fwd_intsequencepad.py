@@ -89,3 +89,6 @@ class FwdIntSequencePad:
             if self.prefix:
                 item = self.prefix + item
             yield item
+
+    def __repr__(self):
+        return f'{self.NAME} [prefix={self.prefix} start={self.start} pad={self.pad}]'

@@ -67,3 +67,6 @@ class InvIntStored:
         if not all((c.ctxt[1:] > c.ctxt[:-1]).all() for c in fwd.codecs):
             return False
         return True
+
+    def __repr__(self):
+        return f'{self.NAME}'

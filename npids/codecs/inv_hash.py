@@ -56,13 +56,11 @@ class InvHash:
         num_buckets = 1 << num_buckets_bits
         hash_mask = num_buckets - 1
         buckets = np.empty(len(fwd), dtype=np.uint32)
-        bidx = 0
         for start_idx in range(0, len(fwd), 10_000):
             end_idx = min(start_idx+10_000, len(fwd))
             batch = fwd.lookup(np.arange(start_idx, end_idx), as_bytes=True)
             hashes = fnv1_32(batch)
-            buckets[bidx:bidx+batch.shape[0]] = hashes & hash_mask
-            bidx += batch.shape[0]
+            buckets[start_idx:end_idx] = hashes & hash_mask
         bucket_counts = np.zeros(num_buckets, dtype=np.uint32)
         idxs, counts = np.unique(buckets, return_counts=True)
         bucket_counts[idxs] = counts.astype(np.uint32)
@@ -75,3 +73,6 @@ class InvHash:
         writer.write(np.array([0], dtype=np.uint32).tobytes())
         writer.write(bucket_offsets.tobytes())
         writer.write(np.argsort(buckets).astype(np.uint32).tobytes())
+
+    def __repr__(self):
+        return f'{self.NAME} [hash_bits={self.hash_bits}]'

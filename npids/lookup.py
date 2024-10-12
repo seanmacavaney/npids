@@ -72,6 +72,20 @@ class Lookup:
             self.inv.close()
             self.inv = None
 
+    def describe(self) -> str:
+        result = [f'{self!r} (count={len(self)})']
+        if self.fwd is not None:
+            result.append('  fwd')
+            for codec in self.fwd.codecs:
+                result.append(f'    {repr(codec.fmt)} (count={codec.count})')
+        if self.inv is not None:
+            result.append('  inv')
+            result.append(f'    {repr(self.inv.codec)}')
+        return '\n'.join(result)
+
+    def __repr__(self) -> str:
+        return f'npids.Lookup({self.path!r})'
+
     @staticmethod
     @contextlib.contextmanager
     def builder(path, build_inv=True, min_block=None):
@@ -237,33 +251,22 @@ class InvLookup:
         return self.lookup(keys)
 
     def lookup(self, keys):
-        out_format = None
-        keys_inp = None
         if isinstance(keys, (str, bytes)):
-            out_format = 'single'
-            keys_inp = np.array([keys], dtype='S')
-        elif isinstance(keys, (list, tuple)):
-            out_format = 'list'
-            keys_inp = np.array(keys, dtype='S')
-        elif hasattr(keys, 'dtype'):
-            if keys.shape == tuple():
-                out_format = 'single'
-                keys_inp = np.array([keys], dtype='S')
-            else:
-                out_format = 'numpy'
-                keys_inp = np.array(keys, dtype='S')
-        elif isinstance(keys, (Iter)):
-            out_format = 'list'
-            keys_inp = np.array(list(keys), dtype='S')
-
-        res = self.codec._lookup(keys_inp)
-        if out_format == 'single':
+            res = self.lookup(np.array([keys]))
             if res[0] == -1:
                 raise LookupError(f'{repr(keys)} not found')
             return res.item()
-        elif out_format == 'list':
-            return res.tolist()
-        return res
+        elif isinstance(keys, (list, tuple)):
+            return self.lookup(np.array(keys)).tolist()
+        elif hasattr(keys, 'dtype'):
+            if keys.dtype.kind == 'U':
+                keys = np.char.encode(keys, encoding='utf8')
+            keys = np.array(keys, dtype='S')
+            return self.codec._lookup(keys)
+        elif isinstance(keys, (Iter)):
+            return self.lookup(list(keys))
+
+        raise ValueError(f'Unsupported input to lookup: {keys!r}')
 
     def close(self):
         pass

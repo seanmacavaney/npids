@@ -58,3 +58,6 @@ class InvIntSequenceMulti:
     def condition(fwd):
         # all fwds must be intsequence or intsequencepad
         return all(isinstance(c.fmt, (codecs.fwd['intsequence'], codecs.fwd['intsequencepad'])) for c in fwd.codecs)
+
+    def __repr__(self):
+        return f'{self.NAME}'

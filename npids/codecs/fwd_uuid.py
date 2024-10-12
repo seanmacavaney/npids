@@ -66,3 +66,6 @@ class FwdUuid:
             if self.prefix:
                 docno = self.prefix + docno
             yield docno
+
+    def __repr__(self):
+        return f'{self.NAME} [prefix={self.prefix} upper={self.upper}]'

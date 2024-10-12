@@ -58,3 +58,6 @@ class FwdFixedBytes:
             if self.prefix:
                 docno = self.prefix + docno
             yield docno.decode()
+
+    def __repr__(self):
+        return f'{self.NAME} [prefix={self.prefix} length={self.length}]'
