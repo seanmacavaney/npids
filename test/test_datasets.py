@@ -35,6 +35,9 @@ class TestDatasets(unittest.TestCase):
     def test_vaswani(self):
         self._test_dataset('vaswani.txt.gz', invalid_docnos=['0', '-1', '11430', '9999999', 'ab', 'a1'])
 
+    def test_hexsamples(self):
+        self._test_dataset('hexsamples.txt.gz')
+
     def _test_dataset(self, file, invalid_docnos=None):
         with gzip.open(f'{os.path.dirname(__file__)}/samples/{file}', 'rt') as fin:
             docnos = [d.strip() for d in logger.pbar(fin, desc=f'loading {file} docnos')]
