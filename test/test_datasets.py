@@ -24,10 +24,10 @@ class TestDatasets(unittest.TestCase):
         self._test_dataset('disks45_nocr.txt.gz')
 
     def test_msmarco_document(self):
-        self._test_dataset('msmarco-document.txt.gz')
+        self._test_dataset('msmarco-document.txt.gz', invalid_docnos=['D-1', 'D10000000', 'Dab', 'Da1', '-1', '10000000', 'ab', 'a1'])
 
     def test_msmarco_passage(self):
-        self._test_dataset('msmarco-passage.txt.gz')
+        self._test_dataset('msmarco-passage.txt.gz', invalid_docnos=['D-1', 'D10000000', 'Dab', 'Da1', '-1', '10000000', 'ab', 'a1'])
 
     def test_neuclir_1_fa(self):
         self._test_dataset('neuclir_1_fa.txt.gz')
