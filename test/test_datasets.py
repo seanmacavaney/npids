@@ -63,6 +63,9 @@ class TestDatasets(unittest.TestCase):
                 self.assertEqual(doc_idxs_shuf[:count].tolist(), lookup[docnos_shuf[:count]])
                 self.assertEqual(doc_idxs_shuf[:count].tolist(), lookup[(x for x in docnos_shuf[:count])])
                 self.assertTrue((doc_idxs_shuf[:count] == lookup[np.array(docnos_shuf[:count])]).all())
+            with self.subTest(f'file={file} iter'):
+                for a, b in zip(docnos, lookup):
+                    self.assertEqual(a, b)
             if invalid_docnos is not None:
                 for docno in invalid_docnos:
                     with self.subTest(f'file={file} invalid_docno={docno}'):
