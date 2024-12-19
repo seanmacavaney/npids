@@ -49,11 +49,15 @@ class TestDatasets(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tdir:
             lookup = Lookup.build(docnos, f'{tdir}/docnos')
             print(lookup.describe())
+            self.assertFalse(-1 in lookup)
+            self.assertFalse(len(docnos) in lookup)
             for i in range(100):
                 docno, docidx = docnos_shuf[i], doc_idxs_shuf[i]
                 self.assertEqual(docno, lookup[docidx])
                 if docno not in duplicates:
                     self.assertEqual(docidx, lookup[docno])
+                self.assertTrue(docno in lookup)
+                self.assertTrue(int(docidx) in lookup)
             if len(duplicates) == 0:
                 count = random.randrange(1, 1000)
                 self.assertEqual(doc_idxs_shuf[:count].tolist(), lookup[docnos_shuf[:count]])
@@ -64,6 +68,7 @@ class TestDatasets(unittest.TestCase):
                     with self.subTest(f'file={file} invalid_docno={docno}'):
                         with self.assertRaises(LookupError):
                             lookup[docno]
+                        self.assertFalse(docno in lookup)
 
 
 if __name__ == '__main__':

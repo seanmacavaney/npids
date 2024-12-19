@@ -1,7 +1,7 @@
 from collections.abc import Iterable as Iter
 import mmap
 import numpy as np
-from typing import Iterable
+from typing import Iterable, Union
 import contextlib
 from .builder import FwdLookupBuilder, InvLookupBuilder
 from .utils import FileManager, peekable, wrap_mmap
@@ -63,6 +63,13 @@ class Lookup:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+    def __contains__(self, item: Union[int, str, bytes]):
+        if isinstance(item, int):
+            return item in self.fwd
+        elif isinstance(item, (str, bytes)):
+            return item in self.inv
+        raise ValueError(f'Unsupported type for __contains__ (expected int, str, or bytes but got {type(item)})')
 
     def close(self):
         if self.fwd is not None:
@@ -189,6 +196,8 @@ class FwdLookup:
         idxs_inp = None
         if isinstance(idxs, (int,)):
             out_format = 'single'
+            if idxs < 0 or idxs >= self._count:
+                raise LookupError(f'{idxs} is out of bounds [0, {self._count})')
             idxs_inp = np.array([idxs], dtype=np.uint32)
         elif hasattr(idxs, 'dtype'):
             if idxs.shape == tuple():
@@ -241,6 +250,10 @@ class FwdLookup:
         for codec, offset in zip(self.codecs, self.offsets):
             print(f'[{offset}, {offset+len(codec)}): {codec.fmt.NAME} {codec.fmt.config()}')
 
+    def __contains__(self, item: int):
+        if not isinstance(item, int):
+            raise ValueError(f'Unsupported type for __contains__ (expected int but got {type(item)})')
+        return 0 <= item < self._count
 
 
 class InvLookup:
@@ -270,3 +283,12 @@ class InvLookup:
 
     def close(self):
         pass
+
+    def __contains__(self, item: Union[str, bytes]):
+        if not isinstance(item, (str, bytes)):
+            raise ValueError(f'Unsupported type for __contains__ (expected str or bytes but got {type(item)})')
+        try:
+            self.lookup(item)
+        except LookupError:
+            return False
+        return True
