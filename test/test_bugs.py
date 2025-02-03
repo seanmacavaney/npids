@@ -24,6 +24,12 @@ class TestBugs(unittest.TestCase):
             assert lookup.inv['D2'] == 0
             assert lookup.inv['D1'] == 1
 
+    def test_hexdigest_concat(self):
+        with tempfile.TemporaryDirectory() as tdir:
+            lookup = Lookup.build(['2aaaaaaaaabbbbbbbbbcccccccddddddd', '2baaaaaaaabbbbbbbbbcccccccddddddd'], f'{tdir}/docnos')
+            assert lookup.inv['2aaaaaaaaabbbbbbbbbcccccccddddddd'] == 0
+            assert lookup.inv['2baaaaaaaabbbbbbbbbcccccccddddddd'] == 1
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -60,7 +60,7 @@ class FwdHexDigest:
         if self.upper:
             docnos = np.char.upper(docnos)
         if self.prefix:
-            docnos = np.char.add(self.prefix, docnos)
+            docnos = np.char.add(self.prefix.encode(), docnos)
         return docnos.astype('S')
 
     def iterator(self, ctxt):
@@ -70,7 +70,7 @@ class FwdHexDigest:
             if self.upper:
                 docno = docno.upper()
             if self.prefix:
-                docno = self.prefix + docno
+                docno = self.prefix.encode() + docno
             yield docno
 
     def __repr__(self):
