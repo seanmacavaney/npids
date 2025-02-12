@@ -30,6 +30,12 @@ class TestBugs(unittest.TestCase):
             assert lookup.inv['2aaaaaaaaabbbbbbbbbcccccccddddddd'] == 0
             assert lookup.inv['2baaaaaaaabbbbbbbbbcccccccddddddd'] == 1
 
+    def test_hexdigest_concat_iterator(self):
+        with tempfile.TemporaryDirectory() as tdir:
+            lookup = Lookup.build(['2aaaaaaaaabbbbbbbbbcccccccddddddd', '2baaaaaaaabbbbbbbbbcccccccddddddd'], f'{tdir}/docnos')
+            for _ in lookup:
+                pass
+
 
 if __name__ == '__main__':
     unittest.main()

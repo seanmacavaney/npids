@@ -70,7 +70,7 @@ class FwdHexDigest:
             if self.upper:
                 docno = docno.upper()
             if self.prefix:
-                docno = self.prefix.encode() + docno
+                docno = self.prefix + docno
             yield docno
 
     def __repr__(self):
