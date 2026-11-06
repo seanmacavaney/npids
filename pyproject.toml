@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "npids"
+description = "Time- and space-efficient bi-directional lookups for identifiers"
+readme = "README.md"
+license = { text = "MPL-2.0" }
+authors = [{ name = "Sean MacAvaney", email = "sean.macavaney@glasgow.ac.uk" }]
+requires-python = ">=3.9"
+dependencies = ["numpy"]
+dynamic = ["version"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "npids._npids"
+features = ["python"]
