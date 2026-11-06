@@ -279,49 +279,69 @@ impl Writer {
 
 type BuiltUnit = (u64, u64, u32, Vec<u8>);
 
-/// Build inverse units covering `[lo, hi)`.
+/// Build inverse units covering `[lo, hi)`: DERIVED units for long runs of increasing keys under one
+/// template (they cost nothing), and PHF units for everything in between.
 fn build_units(reader: &Reader, lo: u64, hi: u64) -> Result<Vec<BuiltUnit>> {
-    if let Some(tid) = derived_template(reader, lo, hi)? {
-        let mut p = Vec::with_capacity(8);
-        p.extend_from_slice(&tid.to_le_bytes());
-        p.extend_from_slice(&[0; 4]);
-        return Ok(vec![(lo, hi, UNIT_DERIVED, p)]);
-    }
+    let min_run = 4096.max((hi - lo) / 32);
     let mut out = Vec::new();
-    let mut a = lo;
-    while a < hi {
-        let b = (a + MAX_PHF_UNIT).min(hi);
-        out.push((a, b, UNIT_PHF, build_phf(reader, a, b)?));
-        a = b;
+    let mut gap = lo;
+    let push_phf = |out: &mut Vec<BuiltUnit>, a: u64, b: u64| -> Result<()> {
+        let mut a = a;
+        while a < b {
+            let e = (a + MAX_PHF_UNIT).min(b);
+            out.push((a, e, UNIT_PHF, build_phf(reader, a, e)?));
+            a = e;
+        }
+        Ok(())
+    };
+    for (a, b, tid) in increasing_runs(reader, lo, hi)? {
+        if b - a >= min_run || (a == lo && b == hi) {
+            push_phf(&mut out, gap, a)?;
+            let mut p = Vec::with_capacity(8);
+            p.extend_from_slice(&tid.to_le_bytes());
+            p.extend_from_slice(&[0; 4]);
+            out.push((a, b, UNIT_DERIVED, p));
+            gap = b;
+        }
     }
+    push_phf(&mut out, gap, hi)?;
     Ok(out)
 }
 
-/// The template of `[lo, hi)` if it qualifies for a DERIVED unit: one template, strictly increasing keys.
-fn derived_template(reader: &Reader, lo: u64, hi: u64) -> Result<Option<u32>> {
+/// Maximal runs `(start, end, template_id)` partitioning `[lo, hi)`, each with a single template and
+/// strictly increasing keys.
+fn increasing_runs(reader: &Reader, lo: u64, hi: u64) -> Result<Vec<(u64, u64, u32)>> {
     let m = reader.manifest();
     let bits = m.chunk_bits;
-    let (c0, c1) = ((lo >> bits) as usize, ((hi - 1) >> bits) as usize);
-    let tid = m.chunks[c0].template_id;
-    if m.chunks[c0..=c1].iter().any(|c| c.template_id != tid) {
-        return Ok(None);
-    }
     let file = reader.file();
     let mask = m.chunk_size() - 1;
+    let mut runs = Vec::new();
+    let mut start = lo;
+    let mut tid_cur: Option<u32> = None;
     let (mut prev, mut cur): (Vec<Val>, Vec<Val>) = (Vec::new(), Vec::new());
-    for ci in c0..=c1 {
+    for ci in (lo >> bits) as usize..=((hi - 1) >> bits) as usize {
         let info: &ChunkInfo = reader.chunk(ci)?;
         let base = (ci as u64) << bits;
         let (ja, jb) = (lo.max(base) & mask, (hi - base).min(info.count as u64));
+        if tid_cur != Some(info.template_id) {
+            if let Some(t) = tid_cur {
+                runs.push((start, base + ja, t));
+            }
+            start = base + ja;
+            tid_cur = Some(info.template_id);
+            prev.clear();
+        }
         for j in ja..jb {
             info.key(file, j as usize, &mut cur);
             if !prev.is_empty() && cur <= prev {
-                return Ok(None);
+                runs.push((start, base + j, info.template_id));
+                start = base + j;
             }
             std::mem::swap(&mut prev, &mut cur);
         }
     }
-    Ok(Some(tid))
+    runs.push((start, hi, tid_cur.unwrap()));
+    Ok(runs)
 }
 
 fn build_phf(reader: &Reader, lo: u64, hi: u64) -> Result<Vec<u8>> {

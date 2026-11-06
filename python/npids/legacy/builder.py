@@ -1,5 +1,4 @@
 from pathlib import Path
-import npids
 from .utils import FileManager
 from . import codecs
 
@@ -7,7 +6,7 @@ from . import codecs
 class FwdLookupBuilder:
     def __init__(self, path, min_block=None):
         self.path = Path(path)
-        self.formats = {k: v() for k, v in npids.codecs.fwd.items()}
+        self.formats = {k: v() for k, v in codecs.fwd.items()}
         self.seeded_formats = self.formats.copy()
         self.format = None
         self.seeds = []
@@ -61,7 +60,8 @@ class FwdLookupBuilder:
 class InvLookupBuilder:
     @staticmethod
     def build(path):
-        with npids.Lookup(path) as lookup, FileManager(path, 'a') as writer:
+        from .lookup import Lookup
+        with Lookup(path) as lookup, FileManager(path, 'a') as writer:
             if len(lookup.fwd.codecs) == 1 and isinstance(lookup.fwd.codecs[0].fmt, codecs.fwd['intsequence']):
                 codecs.inv['intsequence'].build(lookup.fwd, writer)
             elif codecs.inv['intstored'].condition(lookup.fwd):

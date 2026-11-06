@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "npids"
-version = "0.2.0-dev"
+version = "0.2.0"
 dependencies = [
  "crc32c",
  "memmap2",

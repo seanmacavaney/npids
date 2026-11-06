@@ -2,13 +2,11 @@ import os
 import gzip
 from collections import Counter
 from npids import Lookup
-import ir_datasets
 import unittest
 import tempfile
 import random
 import numpy as np
 
-logger = ir_datasets.log.easy()
 
 class TestDatasets(unittest.TestCase):
     def test_beir_dbpedia_entity(self):
@@ -40,7 +38,7 @@ class TestDatasets(unittest.TestCase):
 
     def _test_dataset(self, file, invalid_docnos=None):
         with gzip.open(f'{os.path.dirname(__file__)}/samples/{file}', 'rt') as fin:
-            docnos = [d.strip() for d in logger.pbar(fin, desc=f'loading {file} docnos')]
+            docnos = [d.strip() for d in fin]
         duplicates = set(did for did, count in Counter(docnos).items() if count > 1)
         doc_idxs = np.arange(len(docnos))
         doc_idxs_shuf = doc_idxs.copy()

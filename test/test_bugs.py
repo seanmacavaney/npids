@@ -1,9 +1,7 @@
 from npids import Lookup
-import ir_datasets
 import unittest
 import tempfile
 
-logger = ir_datasets.log.easy()
 
 class TestBugs(unittest.TestCase):
     def test_intparse(self):

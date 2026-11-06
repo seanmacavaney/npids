@@ -91,7 +91,7 @@ class Lookup:
         return '\n'.join(result)
 
     def __repr__(self) -> str:
-        return f'npids.Lookup({self.path!r})'
+        return f'npids.legacy.Lookup({self.path!r})'
 
     @staticmethod
     @contextlib.contextmanager

@@ -28,11 +28,12 @@ Perform forward lookups (index to ID)
 
 ```python
 lookup = Lookup('path/to/lookup.npids')
-# individual indices
+# individual indices (negative indices count from the end)
 lookup.fwd[0] # -> 'id1'
-lookup.fwd[2] # -> 'id3'
+lookup.fwd[-1] # -> 'id3'
 # multiple indices
 lookup.fwd[0,1] # -> ['id1', 'id2']
+lookup.fwd[1:] # -> ['id2', 'id3']
 # works with numpy too
 lookup.fwd[np.array([0,1])] # -> array(['id1', 'id2'], dtype='<U3')
 ```
@@ -44,80 +45,89 @@ lookup = Lookup('path/to/lookup.npids')
 # individual IDs
 lookup.inv['id1'] # -> 0
 lookup.inv['id3'] # -> 2
-# multiple IDs
-lookup.inv['id1', 'id3'] # -> [0, 2]
+lookup.inv['nope'] # -> KeyError
+lookup.inv.get('nope') # -> None
+# multiple IDs (-1 for IDs that are not present)
+lookup.inv['id1', 'id3', 'nope'] # -> [0, 2, -1]
 # works with numpy too
 lookup.inv[np.array(['id1', 'id3'])] # -> array([0, 2])
 ```
 
-That's about it!
+`lookup[...]` picks a forward or inverse lookup based on the type of its argument. IDs may repeat;
+an inverse lookup returns the first index of an ID.
 
-## Codecs
+### Appending
 
-The following codecs are currently supported for forward and inverted lookups. The file format is
-flexible, allowing new codecs to be added in the future.
+Building into an existing file appends to it. Nothing is committed until the builder closes, so a
+crash or an exception leaves the file as it was:
 
-Forward:
+```python
+with Lookup.builder('path/to/lookup.npids') as builder:
+    builder.add('id4')
+    builder.add_many(['id5', 'id6'])
+```
 
- - `fixedbytes`: Every item is stored as a fixed number of bytes (with optional prefix). This
-   serves as a fallback if other forward codecs do not work.
- - `intsequence`: A sequence of integers (e.g., 49, 50, 51) is identifed (with optional prefix); only
-   metadata about the sequence is stored.
- - `intstored`: Integers are identified (with optional prefix), but they are not in a periodic sequence
-   (e.g., 49, 55, 21). The integer values are encoded and stored.
- - `uuid`: UUIDs are identified (with optional prefix). The byte values of the UUIDs are stored.
+Appends only pay for the IDs they add. Over many appends, `Lookup.compact(path)` rewrites the file
+without leftover space and merges its inverse indexes.
 
-Inverse:
+Readers can keep using a file while it's being appended to; they see the IDs that were present when
+they opened it. One writer at a time is allowed (enforced with a file lock).
 
- - `hash`: Hashes of every item are stored on disk, enabling O(1) lookups (but with extra storage).
-   This serves as a fallback if other inverse codecs do not work.
- - `intsequence`: The values only consist of a single forward `intsequence` block; these values can be
-   used to compute the indices.
- - `intstored`: The values consist of only `intstored` blocks with values in sorted order. These values
-   can be deconstructed and looked up in the foward codec using a binary search.
+### Metadata
+
+You can store a JSON object with the IDs:
+
+```python
+Lookup.build(ids, path, meta={'dataset': 'msmarco-passage'})
+Lookup(path).meta # -> {'dataset': 'msmarco-passage'}
+```
+
+### Files from npids < 0.2
+
+`Lookup(path)` still opens files written by older versions (as a `npids.legacy.Lookup`). They can't
+be appended to; convert them with `npids.upgrade(path)`.
+
+## How it works
+
+IDs are stored in fixed-size chunks (65,536 IDs by default). Each chunk picks a *template* that all of
+its IDs match, such as `D{dec}`, `{hex:8}-{hex:4}-{hex:4}-{hex:4}-{hex:12}` or `doc-{dec:5}`, and
+stores only the template's fields, compressed as constants, arithmetic sequences or bit-packed
+integers. IDs that don't follow a pattern are stored as plain strings (`{str}`).
+
+Inverse lookups use the same templates where they can: when IDs are in increasing order (like
+`0, 1, 2, ...` or sorted docnos), finding an ID is a binary search over the forward data, at no extra
+storage cost. Otherwise, npids builds a perfect hash (about 3 bits per ID) plus a table from hash slot
+to index.
+
+The core is written in Rust. The file format is specified in [FORMAT.md](FORMAT.md).
 
 ## Benchmarks
 
-The following benchmarks test the speed of building, forward/inverse lookups (10k random lookups,
-both "cold" and "hot"), and the size of the structure. Rows marked with `*` indicate that the values
-include additional overheads that are not directly related to operation -- namely,
-full engines include content indexing.
+`bench/compare.py` builds each sample in `test/samples` with npids 0.1 (format v1) and 0.2 (format
+v2), and times 10k random lookups with a warm cache (Apple M3).
 
- - `npids`: This software
- - `inmem`: A simple Python lookup structure in memory (a list and a dict), backed by a plain text file
-   that is read into memory
- - `Terrier`: Terrier engine acccessed via the pyterrier package
- - `Lucene`: Apache Lucene accessed via the pyserini package
+| sample | IDs | version | build | size | fwd 10k | inv 10k |
+|---|---:|---|---:|---:|---:|---:|
+| msmarco-passage (`0`, `1`, ...) | 8.8M | 0.1 | 3.45s | 206B | 3.1ms | 4.9ms |
+| | | 0.2 | 1.45s | 9.8KB | 0.9ms | 3.6ms |
+| msmarco-document (`D1555982`, ...) | 3.2M | 0.1 | 3.65s | 40.5MB | 4.1ms | 7.8ms |
+| | | 0.2 | 1.28s | 18.1MB | 1.0ms | 1.4ms |
+| neuclir/1/fa (UUIDs) | 2.2M | 0.1 | 4.72s | 58.6MB | 10.5ms | 17.7ms |
+| | | 0.2 | 1.23s | 39.2MB | 1.6ms | 4.6ms |
+| beir/fever (Wikipedia titles) | 5.4M | 0.1 | 10.15s | 1.1GB | 4.3ms | 12.1ms |
+| | | 0.2 | 2.58s | 137.1MB | 1.5ms | 2.2ms |
+| beir/dbpedia-entity | 4.6M | 0.1 | 8.03s | 833.1MB | 4.9ms | 14.3ms |
+| | | 0.2 | 2.34s | 120.6MB | 1.6ms | 3.1ms |
+| disks45/nocr | 528k | 0.1 | 0.39s | 10.7MB | 6.2ms | 11.2ms |
+| | | 0.2 | 0.21s | 5.3MB | 1.2ms | 1.7ms |
+| cord19 | 193k | 0.1 | 0.08s | 3.2MB | 2.0ms | 4.0ms |
+| | | 0.2 | 0.08s | 2.7MB | 0.8ms | 1.1ms |
 
-The benchmarks show that `npids` is a reasonable choice for performing ID lookups.
-Although it is a bit slower than loading them all into memory, it avoids the
-considerable upfront cost of doing so. Compared to other approaches for loading them
-from disk (Lucene, Terrier), it consumes far less storage, is built faster, and
-(usually) performs the lookups considerably faster.
+## Development
 
-[`msmarco-passage`](https://ir-datasets.com/msmarco-passage) (8.8M docnos: `0`, `1`, `2`, ...)
-
-| System   | Build Time | Cold Fwd | Hot Fwd | Cold Inv | Hot Inv | File Size |
-|----------|-----------:|---------:|--------:|---------:|--------:|----------:|
-| inmem    |      5.95s |      4ms |     1ms |      6ms |     2ms |     1.3GB |
-| `npids`  |     13.88s |      6ms |     6ms |      4ms |     2ms |      206B |
-| Lucene   |   * 55.39s |    119ms |    53ms |    194ms |    60ms | * 130.3MB |
-| Terrier  |    * 3m53s |    121ms |   107ms |    1.60s |   218ms | * 502.9MB |
-
-[`msmarco-document`](https://ir-datasets.com/msmarco-document) (3.2M docnos: `D1555982`, `D301595`, `D1359209`, ...)
-
-| System   | Build Time | Cold Fwd | Hot Fwd | Cold Inv | Hot Inv | File Size |
-|----------|-----------:|---------:|--------:|---------:|--------:|----------:|
-| inmem    |      1.44s |      3ms |     1ms |      5ms |     2ms |    27.9MB |
-| `npids`  |     13.02s |      6ms |     5ms |      8ms |     8ms |    42.5MB |
-| Lucene   |   * 25.57s |    142ms |    61ms |    162ms |    62ms |  * 67.6MB |
-| Terrier  |    * 1m26s |    111ms |   103ms |    866ms |   197ms | * 195.0MB |
-
-[`hc4/fa`](https://ir-datasets.com/hc4#hc4/fa) (486k docnos: `9064520f-bc4d-4118-a30e-7d99f5adc612`, `e34ce085-cc13-4a1f-90e4-81a7fbfd7f0d`, `fa2fc4eb-4f97-4bee-bf92-a7330a80c66f`, ...)
-
-| System   | Build Time | Cold Fwd | Hot Fwd | Cold Inv | Hot Inv | File Size |
-|----------|-----------:|---------:|--------:|---------:|--------:|----------:|
-| inmem    |      0.14s |      2ms |     1ms |      5ms |     1ms |    18.0MB |
-| `npids`  |      2.81s |     21ms |    20ms |     32ms |    31ms |    11.8MB |
-| Lucene   |    * 4.26s |    145ms |    79ms |    163ms |    75ms |  * 49.4MB |
-| Terrier  |   * 14.76s |    125ms |   107ms |    564ms |   187ms |  * 85.1MB |
+```bash
+pip install maturin
+maturin develop --release
+cargo test --release
+pytest test/
+```

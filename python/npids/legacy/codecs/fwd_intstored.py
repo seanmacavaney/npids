@@ -1,6 +1,6 @@
 import re
 import numpy as np
-from npids.utils import wrap_mmap
+from ..utils import wrap_mmap
 
 
 class FwdIntStored:

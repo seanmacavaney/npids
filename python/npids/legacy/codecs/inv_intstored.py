@@ -1,5 +1,5 @@
 import numpy as np
-from npids import codecs
+from .. import codecs
 
 
 def slice_vectorized(a, start):
@@ -14,8 +14,8 @@ def isnumeric(a):
     return mask.all(axis=1)
 
 
-class InvIntSequenceMulti:
-    NAME = 'intsequencemulti'
+class InvIntStored:
+    NAME = 'intstored'
     def __init__(self, count):
         self.count = count
         self.fwd = None
@@ -33,31 +33,36 @@ class InvIntSequenceMulti:
                   target_nums = slice_vectorized(docnos[this_mask], len(codec.fmt.prefix.encode()))
                 else:
                   target_nums = docnos[this_mask]
-                this_mask_2 = isnumeric(target_nums)
-                idxs = target_nums[this_mask_2].astype(int)
-                this_mask_3 = (idxs >= 0) & (idxs < codec.count)
-                idxs = idxs[this_mask_3]
-                if codec.fmt.start:
-                    idxs -= codec.fmt.start
-                this_mask[this_mask] = this_mask_2
-                this_mask[this_mask] = this_mask_3
-                result[this_mask] = idxs + offset
-                mask[this_mask] = True
-                if mask.all():
-                    break
+                this_mask2 = isnumeric(target_nums)
+                target_nums = target_nums[this_mask2].astype(int)
+                this_mask[np.where(this_mask)[0][~this_mask2]] = 0
+                indexes = np.searchsorted(codec.ctxt, target_nums)
+                indexes[indexes >= codec.ctxt.shape[0]] = -1
+                this_mask3 = codec.ctxt[indexes] == target_nums
+                indexes = indexes[this_mask3]
+                this_mask[np.where(this_mask)[0][~this_mask3]] = 0
+                result[this_mask] = indexes + offset
+                mask = mask | this_mask
+            if mask.all():
+                break
         return result
 
     @staticmethod
     def build(fwd, writer):
         writer.write_header(1, len(fwd), {
-            'format': 'intsequencemulti',
+            'format': 'intstored',
             'count': len(fwd),
         })
 
     @staticmethod
     def condition(fwd):
-        # all fwds must be intsequence or intsequencepad
-        return all(isinstance(c.fmt, (codecs.fwd['intsequence'], codecs.fwd['intsequencepad'])) for c in fwd.codecs)
+        # all fwds must be intstored
+        if not all(isinstance(c.fmt, codecs.fwd['intstored']) for c in fwd.codecs):
+            return False
+        # all must be exclusively increasing
+        if not all((c.ctxt[1:] > c.ctxt[:-1]).all() for c in fwd.codecs):
+            return False
+        return True
 
     def __repr__(self):
         return f'{self.NAME}'

@@ -1,5 +1,5 @@
 import numpy as np
-from npids import codecs
+from .. import codecs
 
 
 def slice_vectorized(a, start):

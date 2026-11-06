@@ -53,7 +53,7 @@ class FileManager:
             else:
                 self.config = json.loads(self._file.read(config_len))
                 if self.config['version'] > THIS_VERSION:
-                    raise RuntimeError(f'This file was created with a newer version of npids (file format version={config["version"]}, max supported version={THIS_VERSION}). Please upgrade npids to read this file.')
+                    raise RuntimeError(f'This file was created with a newer version of npids (file format version={self.config["version"]}, max supported version={THIS_VERSION}). Please upgrade npids to read this file.')
             if mode == 'a':
                 pos = [0]
                 while pos[-1] != -1:
