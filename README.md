@@ -109,7 +109,7 @@ v2), and times 10k random lookups with a warm cache (Apple M3).
 | sample | IDs | version | build | size | fwd 10k | inv 10k |
 |---|---:|---|---:|---:|---:|---:|
 | msmarco-passage (`0`, `1`, ...) | 8.8M | 0.1 | 3.45s | 206B | 3.1ms | 4.9ms |
-| | | 0.2 | 1.45s | 9.8KB | 0.9ms | 3.6ms |
+| | | 0.2 | 1.37s | 9.8KB | 0.8ms | 1.4ms |
 | msmarco-document (`D1555982`, ...) | 3.2M | 0.1 | 3.65s | 40.5MB | 4.1ms | 7.8ms |
 | | | 0.2 | 1.28s | 18.1MB | 1.0ms | 1.4ms |
 | neuclir/1/fa (UUIDs) | 2.2M | 0.1 | 4.72s | 58.6MB | 10.5ms | 17.7ms |

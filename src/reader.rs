@@ -1,6 +1,6 @@
 //! Reading v2 files through a memory map.
 
-use crate::chunk::{ChunkInfo, ENC_PLAIN};
+use crate::chunk::{ChunkInfo, ENC_CONST, ENC_PLAIN, ENC_SEQ};
 use crate::format::{self, Manifest, UNIT_DERIVED, UNIT_PHF};
 use crate::phf::PhfView;
 use crate::template::Val;
@@ -12,8 +12,19 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub(crate) enum UnitKind {
-    Derived { template_id: u32 },
+    Derived { template_id: u32, arith: OnceLock<Option<Arith>> },
     Phf(PhfView),
+}
+
+/// A DERIVED unit whose keys are one arithmetic sequence across all its chunks: constant fields
+/// followed by a field `seq` equal to `first + (idx - base) * step`.
+#[derive(Debug)]
+pub(crate) struct Arith {
+    consts: Vec<u64>,
+    seq: usize,
+    base: u64,
+    first: u64,
+    step: u64,
 }
 
 pub(crate) struct Unit {
@@ -55,7 +66,7 @@ impl Reader {
                     if template_id as usize >= manifest.templates.len() {
                         return Err(Error::Corrupt("DERIVED unit has a bad template id".into()));
                     }
-                    UnitKind::Derived { template_id }
+                    UnitKind::Derived { template_id, arith: OnceLock::new() }
                 }
                 UNIT_PHF => UnitKind::Phf(PhfView::read(&mmap, u.offset, u.len)?),
                 k => return Err(Error::Unsupported(format!("unknown inverse unit kind {k}"))),
@@ -132,7 +143,19 @@ impl Reader {
                     }
                     _ => None,
                 },
-                UnitKind::Derived { template_id } => self.find_derived(u, *template_id, id, &mut buf)?,
+                UnitKind::Derived { template_id, arith } => {
+                    let arith = match arith.get() {
+                        Some(a) => a,
+                        None => {
+                            let a = self.unit_arith(u, *template_id)?;
+                            arith.get_or_init(|| a)
+                        }
+                    };
+                    match arith {
+                        Some(a) => self.find_arith(u, *template_id, a, id, &mut buf)?,
+                        None => self.find_derived(u, *template_id, id, &mut buf)?,
+                    }
+                }
             };
             if hit.is_some() {
                 return Ok(hit);
@@ -150,20 +173,128 @@ impl Reader {
         if !t.parse(id, &mut q) {
             return Ok(None);
         }
-        let (mut lo, mut hi) = (u.lo, u.hi);
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            match self.cmp_key(mid, tid, &q, buf)? {
-                Ordering::Less => lo = mid + 1,
-                Ordering::Greater => hi = mid,
-                Ordering::Equal => {
-                    buf.clear();
-                    self.get(mid, buf)?;
-                    return Ok((buf.as_slice() == id).then_some(mid));
+        // Find the last chunk whose first key (within the unit) is <= q.
+        let bits = self.manifest.chunk_bits;
+        let first_in = |ci: u64| (ci << bits).max(u.lo);
+        let (c_lo, c_hi) = (u.lo >> bits, (u.hi - 1) >> bits);
+        let (mut a, mut b) = (c_lo, c_hi + 1);
+        while a < b {
+            let mid = a + (b - a) / 2;
+            if self.cmp_key(first_in(mid), tid, &q, buf)? == Ordering::Greater {
+                b = mid;
+            } else {
+                a = mid + 1;
+            }
+        }
+        if a == c_lo {
+            return Ok(None);
+        }
+        let ci = a - 1;
+        let (start, end) = (first_in(ci), ((ci + 1) << bits).min(u.hi));
+        let hit = match self.seq_position(ci as usize, tid, &q)? {
+            // Arithmetic on the chunk's sequence column gives the only possible position.
+            Some(pos) => pos.map(|j| (ci << bits) + j).filter(|&idx| idx >= start && idx < end),
+            None => {
+                let (mut lo, mut hi) = (start, end);
+                let mut found = None;
+                while lo < hi {
+                    let mid = lo + (hi - lo) / 2;
+                    match self.cmp_key(mid, tid, &q, buf)? {
+                        Ordering::Less => lo = mid + 1,
+                        Ordering::Greater => hi = mid,
+                        Ordering::Equal => {
+                            found = Some(mid);
+                            break;
+                        }
+                    }
+                }
+                found
+            }
+        };
+        let Some(idx) = hit else { return Ok(None) };
+        buf.clear();
+        self.get(idx, buf)?;
+        Ok((buf.as_slice() == id).then_some(idx))
+    }
+
+    /// Whether every chunk of a DERIVED unit continues one arithmetic sequence (see `Arith`).
+    fn unit_arith(&self, u: &Unit, tid: u32) -> Result<Option<Arith>> {
+        let bits = self.manifest.chunk_bits;
+        let (c_lo, c_hi) = ((u.lo >> bits) as usize, ((u.hi - 1) >> bits) as usize);
+        let mut arith: Option<Arith> = None;
+        for ci in c_lo..=c_hi {
+            let info = self.chunk(ci)?;
+            if info.template_id != tid {
+                return Ok(None);
+            }
+            let Some(seq) = info.fields.iter().position(|f| f.enc != ENC_CONST) else { return Ok(None) };
+            let f = &info.fields[seq];
+            if f.enc != ENC_SEQ || (f.p1 as i64) <= 0 {
+                return Ok(None);
+            }
+            let consts: Vec<u64> = info.fields[..seq].iter().map(|f| f.p0).collect();
+            let base = (ci as u64) << bits;
+            match &arith {
+                None => arith = Some(Arith { consts, seq, base, first: f.p0, step: f.p1 }),
+                Some(a) => {
+                    let expect = a.first.wrapping_add((base - a.base).wrapping_mul(a.step));
+                    if a.consts != consts || a.seq != seq || a.step != f.p1 || f.p0 != expect {
+                        return Ok(None);
+                    }
                 }
             }
         }
-        Ok(None)
+        Ok(arith)
+    }
+
+    fn find_arith(&self, u: &Unit, tid: u32, a: &Arith, id: &[u8], buf: &mut Vec<u8>) -> Result<Option<u64>> {
+        let mut q = Vec::new();
+        if !self.manifest.templates[tid as usize].parse(id, &mut q) {
+            return Ok(None);
+        }
+        for (k, &c) in a.consts.iter().enumerate() {
+            if q[k] != Val::Int(c) {
+                return Ok(None);
+            }
+        }
+        let Val::Int(x) = q[a.seq] else { return Ok(None) };
+        if x < a.first || (x - a.first) % a.step != 0 {
+            return Ok(None);
+        }
+        let idx = match a.base.checked_add((x - a.first) / a.step) {
+            Some(i) if i >= u.lo && i < u.hi => i,
+            _ => return Ok(None),
+        };
+        buf.clear();
+        self.get(idx, buf)?;
+        Ok((buf.as_slice() == id).then_some(idx))
+    }
+
+    /// For a chunk with template `tid` whose fields are constants followed by an increasing
+    /// sequence, the only position where key `q` could be (`Some(None)` if nowhere). `None` if the
+    /// chunk does not have that shape.
+    fn seq_position(&self, ci: usize, tid: u32, q: &[Val]) -> Result<Option<Option<u64>>> {
+        let info = self.chunk(ci)?;
+        if info.template_id != tid {
+            return Ok(None);
+        }
+        for (k, f) in info.fields.iter().enumerate() {
+            let Val::Int(x) = q[k] else { return Ok(None) };
+            match f.enc {
+                ENC_CONST if f.p0 == x => continue,
+                ENC_CONST => return Ok(Some(None)),
+                ENC_SEQ if (f.p1 as i64) > 0 => {
+                    if x < f.p0 || (x - f.p0) % f.p1 != 0 {
+                        return Ok(Some(None));
+                    }
+                    let j = (x - f.p0) / f.p1;
+                    return Ok(Some((j < info.count as u64).then_some(j)));
+                }
+                _ => return Ok(None),
+            }
+        }
+        // All fields constant: strictly increasing keys mean the chunk has a single ID here.
+        Ok(Some(Some(0)))
     }
 
     /// Compare the key at `idx` (under template `tid`) with `q`.
@@ -260,7 +391,7 @@ impl Reader {
         }
         for (u, e) in self.units.iter().zip(&m.units) {
             let kind = match &u.kind {
-                UnitKind::Derived { template_id } => format!("derived {}", m.templates[*template_id as usize]),
+                UnitKind::Derived { template_id, .. } => format!("derived {}", m.templates[*template_id as usize]),
                 UnitKind::Phf(_) => "phf".to_string(),
             };
             let _ = writeln!(s, "    [{}, {}) {kind} ({} bytes)", u.lo, u.hi, e.len);

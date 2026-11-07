@@ -31,6 +31,8 @@ fn datasets(rng: &mut Rng) -> Vec<(&'static str, Vec<Vec<u8>>)> {
         v.dedup();
         v.iter().map(|i| format!("doc{i}").into_bytes()).collect()
     }));
+    out.push(("step3", (0..n).map(|i| format!("s{}", i * 3 + 1).into_bytes()).collect()));
+    out.push(("const_then_seq", (0..n).map(|i| format!("v7-{i}").into_bytes()).collect()));
     out.push(("padded", (0..n).map(|i| format!("x-{i:06}").into_bytes()).collect()));
     out.push(("uuid", (0..n).map(|_| {
         let (a, b) = (rng.next(), rng.next());
@@ -73,7 +75,7 @@ fn check(path: &Path, ids: &[Vec<u8>]) {
     for (id, &i) in &first {
         assert_eq!(r.find(id).unwrap(), Some(i), "inv {:?}", String::from_utf8_lossy(id));
     }
-    for absent in [&b"absent"[..], b"D99999999", b"", b"\xff\xfe"] {
+    for absent in [&b"absent"[..], b"D99999999", b"", b"\xff\xfe", b"s2", b"s0", b"s9001", b"v8-1", b"v7-3000", b"0", b"3000", b"D4", b"D3005"] {
         if !first.contains_key(absent) {
             assert_eq!(r.find(absent).unwrap(), None);
         }
