@@ -46,7 +46,7 @@ pub fn cost(columns: &[Column], count: usize) -> usize {
         c += match col {
             Column::Int(v) => {
                 let e = choose_int(v);
-                if e.enc == ENC_FOR { bits::packed_len(count, e.bits) } else { 0 }
+                if e.enc == ENC_FOR { bits::packed_len(count, e.bits as usize) } else { 0 }
             }
             Column::Str(v) => (4 * (count + 1) + v.iter().map(|s| s.len()).sum::<usize>()).next_multiple_of(8),
         };
@@ -56,23 +56,56 @@ pub fn cost(columns: &[Column], count: usize) -> usize {
 
 pub fn encode(columns: &[Column], count: usize) -> Vec<u8> {
     assert!(count > 0);
+    let encs: Vec<Option<IntEnc>> = columns
+        .iter()
+        .map(|c| match c {
+            Column::Int(v) => {
+                debug_assert_eq!(v.len(), count);
+                Some(choose_int(v))
+            }
+            Column::Str(_) => None,
+        })
+        .collect();
+    let rel = |k: usize| -> Vec<u64> {
+        let (Column::Int(v), Some(e)) = (&columns[k], &encs[k]) else { unreachable!() };
+        v.iter().map(|&x| x - e.p0).collect()
+    };
+    let for_fields: Vec<usize> = (0..columns.len()).filter(|&k| encs[k].as_ref().is_some_and(|e| e.enc == ENC_FOR)).collect();
+
     let mut head = W::default();
     head.u32(count as u32).u16(columns.len() as u16).u16(0);
     let mut data = W::default();
     let data_start = CHUNK_HEADER + FIELD_DESC * columns.len();
-    for col in columns {
+    // With two or more FOR fields, store them row by row in one stream (FORMAT.md, "Chunk payload").
+    let mut shared: Option<(usize, usize, usize, Vec<usize>)> = None; // (off, len, stride, bit_offs)
+    if for_fields.len() >= 2 {
+        let rels: Vec<Vec<u64>> = for_fields.iter().map(|&k| rel(k)).collect();
+        let cols: Vec<(&[u64], u8)> = for_fields.iter().zip(&rels).map(|(&k, r)| (r.as_slice(), encs[k].as_ref().unwrap().bits)).collect();
+        let (stream, stride) = bits::pack_rows(&cols, count);
+        let mut offs = Vec::new();
+        let mut o = 0;
+        for c in &cols {
+            offs.push(o);
+            o += c.1 as usize;
+        }
+        shared = Some((data_start, stream.len(), stride, offs));
+        data.bytes(&stream);
+    }
+    for (k, col) in columns.iter().enumerate() {
         let off = data_start + data.len();
-        let (enc, b, p0, p1) = match col {
-            Column::Int(v) => {
-                debug_assert_eq!(v.len(), count);
-                let e = choose_int(v);
-                if e.enc == ENC_FOR {
-                    let rel: Vec<u64> = v.iter().map(|&x| x - e.p0).collect();
-                    data.bytes(&bits::pack(&rel, e.bits));
+        let (enc, b, p0, p1, stride, bit_off, d_off, d_len) = match (col, &encs[k]) {
+            (Column::Int(_), Some(e)) if e.enc == ENC_FOR => match &shared {
+                Some((s_off, s_len, stride, offs)) => {
+                    let i = for_fields.iter().position(|&f| f == k).unwrap();
+                    (e.enc, e.bits, e.p0, e.p1, *stride as u16, offs[i] as u16, *s_off, *s_len)
                 }
-                (e.enc, e.bits, e.p0, e.p1)
-            }
-            Column::Str(v) => {
+                None => {
+                    data.bytes(&bits::pack(&rel(k), e.bits));
+                    (e.enc, e.bits, e.p0, e.p1, 0, 0, off, data_start + data.len() - off)
+                }
+            },
+            (Column::Int(_), Some(e)) => (e.enc, e.bits, e.p0, e.p1, 0, 0, off, 0),
+            (Column::Str(v), _) => {
                 debug_assert_eq!(v.len(), count);
                 let mut o = 0u32;
                 data.u32(0);
@@ -84,11 +117,11 @@ pub fn encode(columns: &[Column], count: usize) -> Vec<u8> {
                     data.bytes(s);
                 }
                 data.pad8();
-                (ENC_PLAIN, 0, 0, 0)
+                (ENC_PLAIN, 0, 0, 0, 0, 0, off, data_start + data.len() - off)
             }
+            _ => unreachable!(),
         };
-        let len = data_start + data.len() - off;
-        head.u8(enc).u8(b).zeros(6).u64(p0).u64(p1).u32(off as u32).u32(len as u32);
+        head.u8(enc).u8(b).u16(stride).u16(bit_off).u16(0).u64(p0).u64(p1).u32(d_off as u32).u32(d_len as u32);
     }
     head.bytes(&data.0);
     head.0
@@ -98,6 +131,9 @@ pub fn encode(columns: &[Column], count: usize) -> Vec<u8> {
 pub struct FieldCol {
     pub enc: u8,
     pub bits: u8,
+    /// Row stride in bits and this field's offset in a row (FOR only).
+    pub stride: usize,
+    pub bit_off: usize,
     pub p0: u64,
     pub p1: u64,
     /// Absolute offset of the column data in the file.
@@ -111,6 +147,9 @@ pub struct ChunkInfo {
     pub count: usize,
     pub template_id: u32,
     pub fields: Vec<FieldCol>,
+    /// Whether any field reads column data (FOR or PLAIN), and whether any is a string.
+    pub has_data: bool,
+    pub has_strings: bool,
 }
 
 impl ChunkInfo {
@@ -136,9 +175,12 @@ impl ChunkInfo {
         let mut fields = Vec::with_capacity(n_fields);
         for (k, part) in tmpl.fields().enumerate() {
             let d = &c[CHUNK_HEADER + FIELD_DESC * k..];
+            let stride = bits::read_u16(d, 2) as usize;
             let f = FieldCol {
                 enc: d[0],
                 bits: d[1],
+                stride: if stride == 0 { d[1] as usize } else { stride },
+                bit_off: bits::read_u16(d, 4) as usize,
                 p0: read_u64(d, 8),
                 p1: read_u64(d, 16),
                 data: start + read_u32(d, 24) as usize,
@@ -149,7 +191,12 @@ impl ChunkInfo {
             }
             let ok = match (f.enc, part) {
                 (ENC_CONST | ENC_SEQ, p) => p.is_int(),
-                (ENC_FOR, p) => p.is_int() && f.bits <= 64 && f.data_len >= bits::packed_len(count, f.bits),
+                (ENC_FOR, p) => {
+                    p.is_int()
+                        && f.bits <= 64
+                        && f.bit_off + f.bits as usize <= f.stride
+                        && f.data_len >= bits::packed_len(count, f.stride)
+                }
                 (ENC_PLAIN, Part::Str) => {
                     f.data_len >= 4 * (count + 1)
                         && 4 * (count + 1) + read_u32(file, f.data + 4 * count) as usize <= f.data_len
@@ -162,7 +209,9 @@ impl ChunkInfo {
             }
             fields.push(f);
         }
-        Ok(ChunkInfo { count, template_id: e.template_id, fields })
+        let has_data = fields.iter().any(|f| f.enc == ENC_FOR || f.enc == ENC_PLAIN);
+        let has_strings = fields.iter().any(|f| f.enc == ENC_PLAIN);
+        Ok(ChunkInfo { count, template_id: e.template_id, fields, has_data, has_strings })
     }
 
     #[inline]
@@ -171,7 +220,7 @@ impl ChunkInfo {
         match f.enc {
             ENC_CONST => f.p0,
             ENC_SEQ => f.p0.wrapping_add((j as u64).wrapping_mul(f.p1)),
-            _ => f.p0.wrapping_add(bits::get(&file[f.data..f.data + f.data_len], f.bits, j)),
+            _ => f.p0.wrapping_add(bits::read_bits(file, f.data, j * f.stride + f.bit_off, f.bits)),
         }
     }
 
@@ -182,6 +231,39 @@ impl ChunkInfo {
         let b = read_u32(file, f.data + 4 * (j + 1)) as usize;
         let blob = f.data + 4 * (self.count + 1);
         &file[blob + a..blob + b]
+    }
+
+    /// Load the first-level data of position `j` (a FOR row word, PLAIN offsets) and return something
+    /// derived from it, so independent lookups can overlap their cache misses.
+    #[inline]
+    pub fn touch(&self, file: &[u8], j: usize) -> u64 {
+        let mut x = 0;
+        for f in &self.fields {
+            match f.enc {
+                ENC_FOR => {
+                    x ^= read_u64(file, f.data + (j * f.stride + f.bit_off) / 64 * 8);
+                    if f.stride == f.bits as usize {
+                        continue;
+                    }
+                    break; // fields sharing a row are in the same place
+                }
+                ENC_PLAIN => x ^= read_u32(file, f.data + 4 * j) as u64,
+                _ => {}
+            }
+        }
+        x
+    }
+
+    /// Load the second-level data of position `j` (the first byte of PLAIN strings).
+    #[inline]
+    pub fn touch2(&self, file: &[u8], j: usize) -> u64 {
+        let mut x = 0;
+        for (k, f) in self.fields.iter().enumerate() {
+            if f.enc == ENC_PLAIN {
+                x ^= self.str(file, k, j).first().copied().unwrap_or(0) as u64;
+            }
+        }
+        x
     }
 
     /// Field values at position `j`.

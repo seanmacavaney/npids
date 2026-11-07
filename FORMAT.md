@@ -226,7 +226,9 @@ Field descriptor:
 |-------:|-----:|-------|
 | 0  | 1 | `enc` |
 | 1  | 1 | `bits` (FOR only) |
-| 2  | 6 | reserved, 0 |
+| 2  | 2 | `stride` (FOR only): bits per row; 0 means `bits` |
+| 4  | 2 | `bit_off` (FOR only): offset of this field within a row |
+| 6  | 2 | reserved, 0 |
 | 8  | 8 | `p0` |
 | 16 | 8 | `p1` |
 | 24 | 4 | `data_off`, relative to the chunk payload start |
@@ -238,20 +240,26 @@ Value of position `j` (`0 <= j < count`) for each encoding:
 |-----:|------|-------------|--------------|------|
 | 0 | `CONST` | integer | `p0` | none |
 | 1 | `SEQ` | integer | `p0 + j * (i64)p1`, wrapping in u64 | none |
-| 2 | `FOR` | integer | `p0 + packed[j]` | packed array, `bits` wide |
+| 2 | `FOR` | integer | `p0 +` the `bits` bits at `j * stride + bit_off` | packed bit stream |
 | 3 | `PLAIN` | `STR` | `blob[off[j] .. off[j+1]]` | `u32 off[count+1]`, then `blob` |
 
 `PLAIN` blob offsets are relative to the start of the blob, which immediately follows `off`.
+
+Several `FOR` fields of a chunk may share one bit stream, stored row by row: each row holds one value of
+every such field, `stride` bits in all, with the field's value at `bit_off` within the row. Their
+descriptors then have the same `data_off`, `data_len` and `stride`, and `bit_off + bits <= stride`.
+This puts all of an ID's fields next to each other, so a random lookup reads one place instead of one
+per field. A `FOR` field with its own stream has `stride = 0` (meaning `bits`) and `bit_off = 0`.
 
 Encodings 4–15 are reserved (for example, FSST-compressed strings).
 
 ### Bit packing
 
-A packed array of `n` values of width `bits` (`0 <= bits <= 64`) is a sequence of u64 words. Value `j`
-occupies bits `j*bits .. (j+1)*bits` of the stream, least-significant bit first within each word and
-earlier words first. The array is `8 * (ceil(n * bits / 64) + 1)` bytes long, so a reader can always
-read the word after the one a value starts in. With `bits = 0` every value is 0 and only the padding
-word is stored.
+A bit stream is a sequence of u64 words. Bit `i` of the stream is bit `i % 64` (least significant
+first) of word `i / 64`. Reading `bits` bits (`0 <= bits <= 64`) at position `i` gives the value whose
+bit `k` is stream bit `i + k`; with `bits = 0` the value is 0. A stream holding `n` rows of `stride`
+bits is `8 * (ceil(n * stride / 64) + 1)` bytes long, so a reader can always read the word after the
+one a value starts in. A packed array of `n` values of width `bits` is a stream with `stride = bits`.
 
 ## Inverse units
 

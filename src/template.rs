@@ -341,10 +341,12 @@ pub fn write_dec(mut x: u64, width: usize, out: &mut Vec<u8>) {
 #[inline]
 pub fn write_hex(x: u64, width: usize, upper: bool, out: &mut Vec<u8>) {
     let digits = if upper { b"0123456789ABCDEF" } else { b"0123456789abcdef" };
-    for k in (0..width).rev() {
-        let d = if k >= 16 { 0 } else { (x >> (4 * k)) & 0xf };
-        out.push(digits[d as usize]);
+    let mut buf = [0u8; 16];
+    let width = width.min(16);
+    for (k, b) in buf[..width].iter_mut().enumerate() {
+        *b = digits[((x >> (4 * (width - 1 - k))) & 0xf) as usize];
     }
+    out.extend_from_slice(&buf[..width]);
 }
 
 #[cfg(test)]

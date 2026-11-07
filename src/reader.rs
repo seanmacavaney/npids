@@ -129,6 +129,44 @@ impl Reader {
         Ok(())
     }
 
+    /// Append the IDs at `idxs` to `out`, pushing the end offset of each one onto `ends`. Faster than
+    /// calling `get` in a loop: lookups are processed in groups whose memory loads overlap.
+    pub fn get_many(&self, idxs: &[u64], out: &mut Vec<u8>, ends: &mut Vec<usize>) -> Result<()> {
+        const GROUP: usize = 32;
+        let bits = self.manifest.chunk_bits;
+        let mask = self.manifest.chunk_size() - 1;
+        let file: &[u8] = &self.mmap;
+        for group in idxs.chunks(GROUP) {
+            let mut sink = 0u64;
+            let (mut any1, mut any2) = (false, false);
+            for &i in group {
+                if i >= self.manifest.total_count {
+                    return Err(Error::OutOfRange(i));
+                }
+                let info = self.chunk((i >> bits) as usize)?;
+                if info.has_data {
+                    any1 = true;
+                    any2 |= info.has_strings;
+                    sink ^= info.touch(file, (i & mask) as usize);
+                }
+            }
+            if any2 {
+                for &i in group {
+                    sink ^= self.chunk((i >> bits) as usize)?.touch2(file, (i & mask) as usize);
+                }
+            }
+            if any1 {
+                std::hint::black_box(sink);
+            }
+            for &i in group {
+                let info = self.chunk((i >> bits) as usize)?;
+                info.decode(file, &self.manifest.templates[info.template_id as usize], (i & mask) as usize, out);
+                ends.push(out.len());
+            }
+        }
+        Ok(())
+    }
+
     /// The first index of `id`. Errors with `NoInverse` if `id` was not found and some indices are not
     /// covered by an inverse unit.
     pub fn find(&self, id: &[u8]) -> Result<Option<u64>> {

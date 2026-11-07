@@ -84,10 +84,7 @@ impl Reader {
             .detach(|| {
                 let mut blob = Vec::with_capacity(idxs.len() * 16);
                 let mut ends = Vec::with_capacity(idxs.len());
-                for &i in &idxs {
-                    self.inner.get(i, &mut blob)?;
-                    ends.push(blob.len());
-                }
+                self.inner.get_many(&idxs, &mut blob, &mut ends)?;
                 Ok::<_, Error>((blob, ends))
             })
             .map_err(to_py)?;
@@ -98,6 +95,25 @@ impl Reader {
             s = e;
         }
         PyList::new(py, items)
+    }
+
+    /// Look up many indices without creating a Python object per ID. Returns `(offsets, data)`:
+    /// an int64 array of length n+1 and a bytes object, so ID `i` is `data[offsets[i]:offsets[i+1]]`
+    /// (the layout of an Arrow large string array).
+    fn get_many_raw<'py>(&self, py: Python<'py>, idxs: PyReadonlyArray1<'py, i64>) -> PyResult<(Bound<'py, PyArray1<i64>>, Bound<'py, PyBytes>)> {
+        let idxs: Vec<u64> = idxs.as_array().iter().map(|&i| self.norm(i)).collect::<PyResult<_>>()?;
+        let (blob, offsets) = py
+            .detach(|| {
+                let mut blob = Vec::with_capacity(idxs.len() * 16);
+                let mut ends = Vec::with_capacity(idxs.len());
+                self.inner.get_many(&idxs, &mut blob, &mut ends)?;
+                let mut offsets = Vec::with_capacity(idxs.len() + 1);
+                offsets.push(0i64);
+                offsets.extend(ends.iter().map(|&e| e as i64));
+                Ok::<_, Error>((blob, offsets))
+            })
+            .map_err(to_py)?;
+        Ok((PyArray1::from_vec(py, offsets), PyBytes::new(py, &blob)))
     }
 
     /// The first index of an ID (str or bytes), or None.

@@ -143,8 +143,8 @@ impl PhfView {
         let (m, b, seed) = (read_u64(p, 8), read_u64(p, 16), read_u64(p, 24));
         let (pilot_bits, slot_bits) = (p[32], p[33]);
         let (pilots_off, slots_off) = (read_u64(p, 40) as usize, read_u64(p, 48) as usize);
-        let pilots_len = bits::packed_len(b as usize, pilot_bits);
-        let slots_len = bits::packed_len(m as usize, slot_bits);
+        let pilots_len = bits::packed_len(b as usize, pilot_bits as usize);
+        let slots_len = bits::packed_len(m as usize, slot_bits as usize);
         if b == 0 || m == 0 || pilot_bits > 64 || slot_bits > 64
             || pilots_off + pilots_len > p.len() || slots_off + slots_len > p.len()
         {
