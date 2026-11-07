@@ -1,7 +1,6 @@
 //! ID templates (FORMAT.md, "Templates").
 
 use crate::{Error, Result};
-use regex::bytes::Regex;
 use std::fmt;
 
 pub const KIND_LIT: u8 = 0;
@@ -48,9 +47,6 @@ pub enum Val<'a> {
 #[derive(Clone)]
 pub struct Template {
     parts: Vec<Part>,
-    re: Regex,
-    /// True if the hand-written parser gives the same result as the regex (see `is_simple`).
-    simple: bool,
     n_fields: usize,
 }
 
@@ -68,30 +64,42 @@ impl PartialEq for Template {
 impl Eq for Template {}
 
 impl Template {
+    /// Check the validity rules of FORMAT.md ("Templates").
     pub fn new(parts: Vec<Part>) -> Result<Template> {
-        let mut n_str = 0;
-        for p in &parts {
+        let invalid = |m: &str| Err(Error::Invalid(format!("invalid template: {m}")));
+        let mut seen_str = false;
+        for (i, p) in parts.iter().enumerate() {
+            let next = parts.get(i + 1);
             match p {
-                Part::DecW(w) if *w == 0 || *w > 20 => {
-                    return Err(Error::Invalid(format!("DECW width {w} out of range")));
+                Part::Lit(l) => {
+                    if l.is_empty() || l.len() > u16::MAX as usize {
+                        return invalid("literal must have 1 to 65535 bytes");
+                    }
+                    if matches!(next, Some(Part::Lit(_))) {
+                        return invalid("adjacent literals");
+                    }
                 }
-                Part::HexL(w) | Part::HexU(w) if *w == 0 || *w > 16 => {
-                    return Err(Error::Invalid(format!("HEX width {w} out of range")));
+                Part::Dec => match next {
+                    None => {}
+                    Some(Part::Lit(l)) if !l[0].is_ascii_digit() => {}
+                    _ => return invalid("DEC must be last or followed by a literal starting with a non-digit"),
+                },
+                Part::DecW(w) if *w == 0 || *w > 20 => return invalid("DECW width out of range"),
+                Part::HexL(w) | Part::HexU(w) if *w == 0 || *w > 16 => return invalid("HEX width out of range"),
+                Part::Str => {
+                    if seen_str {
+                        return invalid("more than one STR");
+                    }
+                    seen_str = true;
+                    if parts[i + 1..].iter().any(|p| p.fixed_len().is_none()) {
+                        return invalid("parts after STR must be fixed width");
+                    }
                 }
-                Part::Lit(l) if l.len() > u16::MAX as usize => {
-                    return Err(Error::Invalid("literal too long".into()));
-                }
-                Part::Str => n_str += 1,
                 _ => {}
             }
         }
-        if n_str > 1 {
-            return Err(Error::Invalid("a template has at most one STR part".into()));
-        }
-        let re = Regex::new(&regex_source(&parts)).map_err(|e| Error::Invalid(e.to_string()))?;
-        let simple = is_simple(&parts);
         let n_fields = parts.iter().filter(|p| p.is_field()).count();
-        Ok(Template { parts, re, simple, n_fields })
+        Ok(Template { parts, n_fields })
     }
 
     pub fn parts(&self) -> &[Part] {
@@ -109,49 +117,6 @@ impl Template {
     /// Parse `id` into `out` (cleared first). Returns false if the template does not match or a
     /// value overflows. Does not check that formatting gives back `id`; see `parse_exact`.
     pub fn parse<'a>(&self, id: &'a [u8], out: &mut Vec<Val<'a>>) -> bool {
-        out.clear();
-        if self.simple { self.parse_simple(id, out) } else { self.parse_regex(id, out) }
-    }
-
-    /// Parse and check that formatting gives back exactly `id` (the round-trip rule).
-    pub fn parse_exact<'a>(&self, id: &'a [u8], out: &mut Vec<Val<'a>>, scratch: &mut Vec<u8>) -> bool {
-        if !self.parse(id, out) {
-            return false;
-        }
-        scratch.clear();
-        self.format(out, scratch);
-        scratch.as_slice() == id
-    }
-
-    pub fn parse_regex<'a>(&self, id: &'a [u8], out: &mut Vec<Val<'a>>) -> bool {
-        out.clear();
-        let mut locs = self.re.capture_locations();
-        if self.re.captures_read(&mut locs, id).is_none() {
-            return false;
-        }
-        let mut g = 1;
-        for p in &self.parts {
-            if !p.is_field() {
-                continue;
-            }
-            let (s, e) = locs.get(g).unwrap();
-            g += 1;
-            let text = &id[s..e];
-            let v = match p {
-                Part::Str => Val::Str(text),
-                Part::Dec | Part::DecW(_) => match parse_dec(text) {
-                    Some(v) => Val::Int(v),
-                    None => return false,
-                },
-                Part::HexL(_) | Part::HexU(_) => Val::Int(parse_hex(text)),
-                Part::Lit(_) => unreachable!(),
-            };
-            out.push(v);
-        }
-        true
-    }
-
-    fn parse_simple<'a>(&self, id: &'a [u8], out: &mut Vec<Val<'a>>) -> bool {
         out.clear();
         let mut pos = 0;
         for (i, p) in self.parts.iter().enumerate() {
@@ -196,7 +161,6 @@ impl Template {
                     pos += w;
                 }
                 Part::Str => {
-                    // Everything after STR is fixed width (checked by is_simple).
                     let suffix: usize = self.parts[i + 1..].iter().map(|p| p.fixed_len().unwrap()).sum();
                     if id.len() < pos + suffix {
                         return false;
@@ -208,6 +172,16 @@ impl Template {
             }
         }
         pos == id.len()
+    }
+
+    /// Parse and check that formatting gives back exactly `id` (the round-trip rule).
+    pub fn parse_exact<'a>(&self, id: &'a [u8], out: &mut Vec<Val<'a>>, scratch: &mut Vec<u8>) -> bool {
+        if !self.parse(id, out) {
+            return false;
+        }
+        scratch.clear();
+        self.format(out, scratch);
+        scratch.as_slice() == id
     }
 
     /// Append the formatted ID to `out`.
@@ -314,52 +288,6 @@ impl fmt::Display for Template {
     }
 }
 
-fn regex_source(parts: &[Part]) -> String {
-    let mut s = String::from("(?s-u)^");
-    for p in parts {
-        match p {
-            Part::Lit(l) => {
-                for &b in l {
-                    if b.is_ascii_alphanumeric() {
-                        s.push(b as char);
-                    } else {
-                        s.push_str(&format!("\\x{b:02x}"));
-                    }
-                }
-            }
-            Part::Dec => s.push_str("(0|[1-9][0-9]*)"),
-            Part::DecW(w) => s.push_str(&format!("([0-9]{{{w}}})")),
-            Part::HexL(w) => s.push_str(&format!("([0-9a-f]{{{w}}})")),
-            Part::HexU(w) => s.push_str(&format!("([0-9A-F]{{{w}}})")),
-            Part::Str => s.push_str("(.*)"),
-        }
-    }
-    s.push('$');
-    s
-}
-
-/// Whether the hand-written left-to-right parser is equivalent to leftmost-greedy regex matching:
-/// every DEC is followed by the end or by a literal starting with a non-digit, and everything after
-/// a STR is fixed width.
-fn is_simple(parts: &[Part]) -> bool {
-    for (i, p) in parts.iter().enumerate() {
-        match p {
-            Part::Dec => match parts.get(i + 1) {
-                None => {}
-                Some(Part::Lit(l)) if !l.is_empty() && !l[0].is_ascii_digit() => {}
-                _ => return false,
-            },
-            Part::Str => {
-                if parts[i + 1..].iter().any(|p| p.fixed_len().is_none()) {
-                    return false;
-                }
-            }
-            _ => {}
-        }
-    }
-    true
-}
-
 #[inline]
 fn is_hex(b: u8, upper: bool) -> bool {
     b.is_ascii_digit() || if upper { (b'A'..=b'F').contains(&b) } else { (b'a'..=b'f').contains(&b) }
@@ -430,36 +358,53 @@ mod tests {
         Part::Lit(s.as_bytes().to_vec())
     }
 
+    fn parse(t: &Template, id: &str) -> Option<Vec<String>> {
+        let mut v = Vec::new();
+        t.parse(id.as_bytes(), &mut v).then(|| {
+            v.iter()
+                .map(|x| match x {
+                    Val::Int(i) => i.to_string(),
+                    Val::Str(s) => format!("'{}'", String::from_utf8_lossy(s)),
+                })
+                .collect()
+        })
+    }
+
     #[test]
-    fn simple_matches_regex() {
-        let templates = vec![
-            t(vec![lit("D"), Part::Dec]),
-            t(vec![Part::Dec]),
-            t(vec![lit("doc-"), Part::DecW(5), lit("-"), Part::Dec]),
-            t(vec![Part::HexL(8), lit("-"), Part::HexL(4)]),
-            t(vec![lit("x"), Part::Str, lit(".txt")]),
-            t(vec![Part::Str, Part::HexU(2)]),
-            t(vec![Part::Dec, lit("a"), Part::Str, Part::DecW(2)]),
-        ];
-        let ids: Vec<&[u8]> = vec![
-            b"D1", b"D0", b"D01", b"D", b"D18446744073709551615", b"D18446744073709551616", b"12",
-            b"0", b"00", b"doc-00012-7", b"doc-00012-07", b"doc-0012-7", b"deadbeef-0a1b",
-            b"DEADBEEF-0a1b", b"xabc.txt", b"x.txt", b"x.tx", b"hello1F", b"1F", b"F", b"5aqq07",
-            b"5a07", b"5a7", b"",
-        ];
-        let mut a = Vec::new();
-        let mut b = Vec::new();
-        for tm in &templates {
-            assert!(tm.simple, "{tm}");
-            for id in &ids {
-                let ra = tm.parse_simple(id, &mut a);
-                let rb = tm.parse_regex(id, &mut b);
-                assert_eq!(ra, rb, "{tm} {:?}", String::from_utf8_lossy(id));
-                if ra {
-                    assert_eq!(a, b, "{tm} {:?}", String::from_utf8_lossy(id));
-                }
-            }
-        }
+    fn parsing() {
+        let d = t(vec![lit("D"), Part::Dec]);
+        assert_eq!(parse(&d, "D1"), Some(vec!["1".into()]));
+        assert_eq!(parse(&d, "D0"), Some(vec!["0".into()]));
+        assert_eq!(parse(&d, "D01"), None);
+        assert_eq!(parse(&d, "D"), None);
+        assert_eq!(parse(&d, "D18446744073709551615"), Some(vec!["18446744073709551615".into()]));
+        assert_eq!(parse(&d, "D18446744073709551616"), None);
+        let x = t(vec![lit("doc-"), Part::DecW(5), lit("-"), Part::Dec]);
+        assert_eq!(parse(&x, "doc-00012-7"), Some(vec!["12".into(), "7".into()]));
+        assert_eq!(parse(&x, "doc-0012-7"), None);
+        let h = t(vec![Part::HexL(8), lit("-"), Part::HexL(4)]);
+        assert_eq!(parse(&h, "deadbeef-0a1b"), Some(vec![0xdeadbeefu64.to_string(), 0x0a1b.to_string()]));
+        assert_eq!(parse(&h, "DEADBEEF-0a1b"), None);
+        let s = t(vec![lit("x"), Part::Str, lit(".txt")]);
+        assert_eq!(parse(&s, "xabc.txt"), Some(vec!["'abc'".into()]));
+        assert_eq!(parse(&s, "x.txt"), Some(vec!["''".into()]));
+        assert_eq!(parse(&s, "x.tx"), None);
+        let m = t(vec![Part::Dec, lit("a"), Part::Str, Part::DecW(2)]);
+        assert_eq!(parse(&m, "5aqq07"), Some(vec!["5".into(), "'qq'".into(), "7".into()]));
+        assert_eq!(parse(&m, "5a7"), None);
+    }
+
+    #[test]
+    fn validity() {
+        assert!(Template::new(vec![Part::Dec, Part::Dec]).is_err());
+        assert!(Template::new(vec![Part::Dec, lit("1")]).is_err());
+        assert!(Template::new(vec![Part::Dec, Part::Str]).is_err());
+        assert!(Template::new(vec![Part::Str, Part::Dec]).is_err());
+        assert!(Template::new(vec![Part::Str, lit("a"), Part::Str]).is_err());
+        assert!(Template::new(vec![lit("a"), lit("b")]).is_err());
+        assert!(Template::new(vec![lit("")]).is_err());
+        assert!(Template::new(vec![Part::HexL(17)]).is_err());
+        assert!(Template::new(vec![Part::Dec, lit("-"), Part::Str, Part::HexL(4)]).is_ok());
     }
 
     #[test]

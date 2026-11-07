@@ -2,7 +2,6 @@
 
 use crate::bits::{self, W, read_u64};
 use crate::{Error, Result};
-use xxhash_rust::xxh3::xxh3_64_with_seed;
 
 const ALPHA: f64 = 0.98;
 const LAMBDA: f64 = 4.5;
@@ -20,9 +19,23 @@ pub fn fmix64(mut k: u64) -> u64 {
     k
 }
 
+/// `hash64` from FORMAT.md: one code path for every length.
 #[inline]
 pub fn hash(id: &[u8], seed: u64) -> u64 {
-    xxh3_64_with_seed(id, seed)
+    let mut h = seed ^ (id.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    let mut blocks = id.chunks_exact(8);
+    for b in &mut blocks {
+        h = (h ^ u64::from_le_bytes(b.try_into().unwrap())).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h ^= h >> 31;
+    }
+    let rest = blocks.remainder();
+    if !rest.is_empty() {
+        let mut last = [0u8; 8];
+        last[..rest.len()].copy_from_slice(rest);
+        h = (h ^ u64::from_le_bytes(last)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h ^= h >> 31;
+    }
+    fmix64(h)
 }
 
 #[inline]
@@ -42,7 +55,7 @@ pub fn build(keys: &[(u64, u64)], range: u64, seed: u64) -> Option<Vec<u8>> {
     let n = keys.len() as u64;
     let m = n.max((n as f64 / ALPHA).ceil() as u64).max(1);
     let b = ((n as f64 / LAMBDA).ceil() as u64).clamp(1, u32::MAX as u64 - 1);
-    let b1 = (0.3 * b as f64) as u64;
+    let b1 = b * 3 / 10;
 
     // Group keys by bucket (counting sort).
     let bk: Vec<u64> = keys.iter().map(|&(h, _)| bucket(h, b, b1)).collect();
@@ -140,7 +153,7 @@ impl PhfView {
         Ok(PhfView {
             m,
             b,
-            b1: (0.3 * b as f64) as u64,
+            b1: b * 3 / 10,
             seed,
             pilot_bits,
             slot_bits,

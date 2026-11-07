@@ -164,21 +164,36 @@ readers ignore keys they do not know.
 
 A template is a sequence of parts. Each part is a literal or a field:
 
-| `kind` | Name | Matches (regex) | Value |
-|------:|------|-----------------|-------|
-| 0 | `LIT` | the literal bytes | none |
-| 1 | `DEC` | `0\|[1-9][0-9]*` | u64 |
-| 2 | `DECW` | `[0-9]{width}` | u64 |
-| 3 | `HEXL` | `[0-9a-f]{width}`, `1 <= width <= 16` | u64 |
-| 4 | `HEXU` | `[0-9A-F]{width}`, `1 <= width <= 16` | u64 |
-| 5 | `STR` | `.*` (any bytes) | bytes |
+| `kind` | Name | Matches | Value |
+|------:|------|---------|-------|
+| 0 | `LIT` | the literal bytes (at least one) | none |
+| 1 | `DEC` | a decimal number without leading zeros (`0`, or a digit `1-9` followed by digits) | u64 |
+| 2 | `DECW` | exactly `width` digits, `1 <= width <= 20` | u64 |
+| 3 | `HEXL` | exactly `width` digits from `0-9a-f`, `1 <= width <= 16` | u64 |
+| 4 | `HEXU` | exactly `width` digits from `0-9A-F`, `1 <= width <= 16` | u64 |
+| 5 | `STR` | any bytes, possibly none | bytes |
 
-`DEC` and `DECW` values must fit in a u64. A template has at most one `STR` part.
+A template is valid only if:
 
-**Parsing** an ID with a template means full-matching it against the concatenation of the part regexes
-with leftmost-greedy semantics (as in Perl or Rust's `regex`), and reading each field's value from its
-capture. **Formatting** writes the parts in order (`DEC` without leading zeros, `DECW` zero-padded to
-`width`, hex at exactly `width` digits).
+- no two `LIT` parts are adjacent;
+- every `DEC` is the last part, or is followed by a `LIT` whose first byte is not a digit;
+- it has at most one `STR`, and every part after the `STR` is a `LIT`, `DECW`, `HEXL` or `HEXU`.
+
+These rules make parsing a single left-to-right pass with no backtracking. Readers MUST reject files with
+invalid templates.
+
+**Parsing** an ID with a template reads the parts in order from position 0:
+
+- `LIT`: the bytes at the position must equal the literal.
+- `DEC`: take the run of digits at the position (at least one). If it starts with `0`, take only that
+  `0`.
+- `DECW`, `HEXL`, `HEXU`: take exactly `width` bytes, all from the part's character set.
+- `STR`: take everything up to `len(id) - s`, where `s` is the total width of the parts after it
+  (which must not be before the position).
+
+The ID matches if every part succeeds, no `DEC` or `DECW` value exceeds `2^64 - 1`, and the parts end
+exactly at the end of the ID. **Formatting** writes the parts in order (`DEC` without leading zeros,
+`DECW` zero-padded to `width`, hex at exactly `width` digits).
 
 An ID may be stored with a template only if parsing succeeds and formatting the parsed values gives back
 the ID byte for byte. Writers MUST check this for every ID; readers rely on it. Because parsing is
@@ -278,19 +293,32 @@ Payload:
 followed by `pilots` (`b` values packed at `pilot_bits`) and `slots` (`m` values packed at `slot_bits`).
 A slot holds `index - lo`, or `2^slot_bits - 1` if empty.
 
-Definitions:
+Definitions (all arithmetic on u64, wrapping, unless noted):
 
 ```
-h          = xxh3_64(id, seed)
-b1         = floor(0.3 * b)                              # dense buckets
+h          = hash64(id, seed)
+b1         = (b * 3) / 10                                # dense buckets
 bucket(h)  = (h & 0xFFFFFFFF) < 0x99999999               # ~60% of keys
                ? fastrange32(h >> 32, b1)
                : b1 + fastrange32(h >> 32, b - b1)
 pos(h, p)  = fastrange64(fmix64(h ^ fmix64(p)), m)
-fastrange32(x, k) = (x * k) >> 32                        # u64 arithmetic
-fastrange64(x, k) = (x * k) >> 64                        # u128 arithmetic
-fmix64     = the MurmurHash3 64-bit finalizer
+fastrange32(x, k) = (x * k) >> 32
+fastrange64(x, k) = (x * k) >> 64                        # u128 product
+
+fmix64(k):                                               # MurmurHash3 finalizer
+  k ^= k >> 33; k *= 0xff51afd7ed558ccd
+  k ^= k >> 33; k *= 0xc4ceb9fe1a85ec53
+  k ^= k >> 33; return k
+
+hash64(id, seed):
+  h = seed ^ (len(id) * 0x9e3779b97f4a7c15)
+  for each 8-byte block w of id, read little-endian, the last one padded with zero bytes:
+    h = (h ^ w) * 0xbf58476d1ce4e5b9
+    h ^= h >> 31
+  return fmix64(h)
 ```
+
+`hash64` has a single code path for every ID length, so it is cheap to implement on a GPU.
 
 When `b1 = 0` (very small units), every key goes to the second branch.
 

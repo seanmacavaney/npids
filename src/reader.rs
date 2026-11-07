@@ -258,7 +258,7 @@ impl Reader {
             }
         }
         let Val::Int(x) = q[a.seq] else { return Ok(None) };
-        if x < a.first || (x - a.first) % a.step != 0 {
+        if x < a.first || !(x - a.first).is_multiple_of(a.step) {
             return Ok(None);
         }
         let idx = match a.base.checked_add((x - a.first) / a.step) {
