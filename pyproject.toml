@@ -12,9 +12,6 @@ requires-python = ">=3.9"
 dependencies = ["numpy"]
 dynamic = ["version"]
 
-[project.optional-dependencies]
-cuda = ["cupy-cuda12x"]
-
 [tool.maturin]
 python-source = "python"
 module-name = "npids._npids"

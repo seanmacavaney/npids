@@ -87,26 +87,8 @@ Lookup(path).meta # -> {'dataset': 'msmarco-passage'}
 `Lookup(path)` still opens files written by older versions (as a `npids.legacy.Lookup`). They can't
 be appended to; convert them with `npids.upgrade(path)`.
 
-### GPU lookups
-
-`npids.cuda` decodes forward lookups on an NVIDIA GPU (it needs [cupy](https://cupy.dev)). This is
-useful when the indices are already on the device, such as the top-k results of GPU retrieval: decoding
-them there avoids a round trip through the CPU.
-
-```python
-from npids.cuda import DeviceLookup
-dl = DeviceLookup(Lookup('path/to/lookup.npids'))  # copies the file to the GPU once
-offsets, data = dl.lookup(topk_idxs)        # cupy arrays; ID i is data[offsets[i]:offsets[i+1]]
-offsets, data = dl.lookup_host(topk_idxs)   # the same, as numpy arrays
-ids = dl.lookup_list(topk_idxs)             # list of str
-```
-
-`topk_idxs` can be a cupy, torch or numba device array (or a numpy array). On an RTX 3090, decoding a
-batch takes about 0.03 ms with the result left on the device, and 0.07-0.2 ms including the copy back to
-the host for batches of 1,000-32,000 IDs (`bench/gpu_fwd.py`).
-
-On the CPU, `lookup._reader.get_many_raw(idxs)` returns the same `(offsets, data)` layout without
-creating a Python object per ID.
+For large batches, `lookup._reader.get_many_raw(idxs)` returns the IDs as an Arrow-style `(offsets, data)`
+pair without creating a Python object per ID (e.g. for `pyarrow.StringArray.from_buffers`).
 
 ## How it works
 
