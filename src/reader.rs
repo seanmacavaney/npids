@@ -33,6 +33,31 @@ pub(crate) struct Unit {
     pub kind: UnitKind,
 }
 
+/// Flat tables describing every chunk, for decoders outside this library (e.g. a GPU kernel).
+/// Offsets in `f_data` are absolute byte offsets in the file.
+#[derive(Default)]
+pub struct Layout {
+    pub chunk_bits: u8,
+    pub total: u64,
+    pub c_template: Vec<u32>,
+    pub c_field_start: Vec<u32>,
+    pub f_enc: Vec<u8>,
+    pub f_bits: Vec<u8>,
+    pub f_stride: Vec<u32>,
+    pub f_bit_off: Vec<u32>,
+    pub f_p0: Vec<u64>,
+    pub f_p1: Vec<u64>,
+    pub f_data: Vec<u64>,
+    pub t_part_start: Vec<u32>,
+    pub p_kind: Vec<u8>,
+    pub p_width: Vec<u8>,
+    pub p_lit_off: Vec<u32>,
+    pub p_lit_len: Vec<u32>,
+    pub lit_pool: Vec<u8>,
+    /// Longest ID in the file.
+    pub max_len: u64,
+}
+
 pub struct Reader {
     path: PathBuf,
     mmap: Mmap,
@@ -127,6 +152,60 @@ impl Reader {
         let info = self.chunk(ci)?;
         info.decode(&self.mmap, &self.manifest.templates[info.template_id as usize], j, out);
         Ok(())
+    }
+
+    /// Flat tables of every chunk, field and template (see `Layout`).
+    pub fn layout(&self) -> Result<Layout> {
+        use crate::template::Part;
+        let m = &self.manifest;
+        let mut l = Layout { chunk_bits: m.chunk_bits, total: m.total_count, ..Default::default() };
+        let mut max_part_len = vec![0u64; m.templates.len()];
+        for (t, tm) in m.templates.iter().enumerate() {
+            l.t_part_start.push(l.p_kind.len() as u32);
+            for p in tm.parts() {
+                let (kind, width, lit): (u8, u8, &[u8]) = match p {
+                    Part::Lit(x) => (0, 0, x),
+                    Part::Dec => (1, 0, &[]),
+                    Part::DecW(w) => (2, *w, &[]),
+                    Part::HexL(w) => (3, *w, &[]),
+                    Part::HexU(w) => (4, *w, &[]),
+                    Part::Str => (5, 0, &[]),
+                };
+                l.p_kind.push(kind);
+                l.p_width.push(width);
+                l.p_lit_off.push(l.lit_pool.len() as u32);
+                l.p_lit_len.push(lit.len() as u32);
+                l.lit_pool.extend_from_slice(lit);
+                max_part_len[t] += match kind {
+                    0 => lit.len() as u64,
+                    1 => 20,
+                    _ => width as u64,
+                };
+            }
+        }
+        l.t_part_start.push(l.p_kind.len() as u32);
+        let file: &[u8] = &self.mmap;
+        for ci in 0..m.chunks.len() {
+            let info = self.chunk(ci)?;
+            l.c_template.push(info.template_id);
+            l.c_field_start.push(l.f_enc.len() as u32);
+            let mut str_max = 0u64;
+            for (k, f) in info.fields.iter().enumerate() {
+                l.f_enc.push(f.enc);
+                l.f_bits.push(f.bits);
+                l.f_stride.push(f.stride as u32);
+                l.f_bit_off.push(f.bit_off as u32);
+                l.f_p0.push(f.p0);
+                l.f_p1.push(f.p1);
+                l.f_data.push(f.data as u64);
+                if f.enc == ENC_PLAIN {
+                    str_max = (0..info.count).map(|j| info.str(file, k, j).len() as u64).max().unwrap_or(0);
+                }
+            }
+            l.max_len = l.max_len.max(max_part_len[info.template_id as usize] + str_max);
+        }
+        l.c_field_start.push(l.f_enc.len() as u32);
+        Ok(l)
     }
 
     /// Append the IDs at `idxs` to `out`, pushing the end offset of each one onto `ends`. Faster than

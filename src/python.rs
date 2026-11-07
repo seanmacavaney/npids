@@ -145,6 +145,31 @@ impl Reader {
         Ok(PyArray1::from_vec(py, out))
     }
 
+    /// Flat chunk/field/template tables for external decoders (see `npids.cuda`).
+    fn layout<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        let l = self.inner.layout().map_err(to_py)?;
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("chunk_bits", l.chunk_bits)?;
+        d.set_item("total", l.total)?;
+        d.set_item("max_len", l.max_len)?;
+        d.set_item("c_template", PyArray1::from_vec(py, l.c_template))?;
+        d.set_item("c_field_start", PyArray1::from_vec(py, l.c_field_start))?;
+        d.set_item("f_enc", PyArray1::from_vec(py, l.f_enc))?;
+        d.set_item("f_bits", PyArray1::from_vec(py, l.f_bits))?;
+        d.set_item("f_stride", PyArray1::from_vec(py, l.f_stride))?;
+        d.set_item("f_bit_off", PyArray1::from_vec(py, l.f_bit_off))?;
+        d.set_item("f_p0", PyArray1::from_vec(py, l.f_p0))?;
+        d.set_item("f_p1", PyArray1::from_vec(py, l.f_p1))?;
+        d.set_item("f_data", PyArray1::from_vec(py, l.f_data))?;
+        d.set_item("t_part_start", PyArray1::from_vec(py, l.t_part_start))?;
+        d.set_item("p_kind", PyArray1::from_vec(py, l.p_kind))?;
+        d.set_item("p_width", PyArray1::from_vec(py, l.p_width))?;
+        d.set_item("p_lit_off", PyArray1::from_vec(py, l.p_lit_off))?;
+        d.set_item("p_lit_len", PyArray1::from_vec(py, l.p_lit_len))?;
+        d.set_item("lit_pool", PyArray1::from_vec(py, l.lit_pool))?;
+        Ok(d)
+    }
+
     fn has_full_inverse(&self) -> bool {
         self.inner.inverse_coverage() == self.inner.len()
     }
