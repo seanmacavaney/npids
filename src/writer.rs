@@ -215,7 +215,8 @@ impl Writer {
             ids.push(&self.pending[s..e]);
             s = e;
         }
-        let (t, cols) = infer::choose(&ids);
+        let prev = self.manifest.chunks.last().map(|c| &self.manifest.templates[c.template_id as usize]);
+        let (t, cols) = infer::choose(&ids, prev);
         let payload = chunk::encode(&cols, ids.len());
         let count = ids.len() as u32;
         drop(cols);
@@ -282,6 +283,8 @@ type BuiltUnit = (u64, u64, u32, Vec<u8>);
 /// Build inverse units covering `[lo, hi)`: DERIVED units for long runs of increasing keys under one
 /// template (they cost nothing), and PHF units for everything in between.
 fn build_units(reader: &Reader, lo: u64, hi: u64) -> Result<Vec<BuiltUnit>> {
+    // Lookups probe units in order (to return the first index), and every PHF unit before the hit
+    // costs a probe of the file, so keep the number of units small.
     let min_run = 4096.max((hi - lo) / 32);
     let mut out = Vec::new();
     let mut gap = lo;

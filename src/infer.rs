@@ -4,16 +4,22 @@
 use crate::chunk::{self, Column};
 use crate::template::{Part, Template, Val};
 
-/// Pick the cheapest template that every ID round-trips through, and return its columns.
-pub fn choose<'a>(ids: &[&'a [u8]]) -> (Template, Vec<Column<'a>>) {
+/// Pick a template that every ID round-trips through, and return its columns.
+///
+/// Among the candidates that cost at most a little more than the cheapest one, prefer `prev` (the
+/// previous chunk's template), then the one with the most fields: neighbouring chunks that share a
+/// template can share one derived inverse unit, which saves far more than a constant column costs.
+pub fn choose<'a>(ids: &[&'a [u8]], prev: Option<&Template>) -> (Template, Vec<Column<'a>>) {
     assert!(!ids.is_empty());
-    let sample: Vec<&[u8]> = {
+    let mut sample: Vec<&[u8]> = {
         let step = (ids.len() / 64).max(1);
         ids.iter().step_by(step).copied().collect()
     };
-    let mut best: Option<(usize, Template, Vec<Column<'a>>)> = None;
+    sample.push(ids[ids.len() - 1]);
+    let mut found: Vec<(usize, Template, Vec<Column<'a>>)> = Vec::new();
     let mut seen: Vec<Vec<Part>> = Vec::new();
-    for parts in candidates(ids) {
+    let cands = prev.map(|t| t.parts().to_vec()).into_iter().chain(candidates(ids, &sample));
+    for parts in cands {
         if seen.contains(&parts) {
             continue;
         }
@@ -23,14 +29,19 @@ pub fn choose<'a>(ids: &[&'a [u8]]) -> (Template, Vec<Column<'a>>) {
             continue;
         }
         if let Some(cols) = columns(&t, ids) {
-            let c = chunk::cost(&cols, ids.len());
-            if best.as_ref().is_none_or(|b| c < b.0) {
-                best = Some((c, t, cols));
-            }
+            found.push((chunk::cost(&cols, ids.len()), t, cols));
         }
     }
-    let (_, t, cols) = best.expect("{str} always matches");
-    (t, cols)
+    let min = found.iter().map(|f| f.0).min().expect("{str} always matches");
+    let slack = min + min / 256 + 2 * chunk::FIELD_DESC;
+    let pick = found
+        .into_iter()
+        .enumerate()
+        .filter(|(_, f)| f.0 <= slack)
+        .max_by_key(|(i, f)| (prev == Some(&f.1), f.2.len(), std::cmp::Reverse((f.0, *i))))
+        .unwrap()
+        .1;
+    (pick.1, pick.2)
 }
 
 fn matches_all(t: &Template, ids: &[&[u8]]) -> bool {
@@ -60,9 +71,10 @@ pub fn columns<'a>(t: &Template, ids: &[&'a [u8]]) -> Option<Vec<Column<'a>>> {
     Some(cols)
 }
 
-fn candidates(ids: &[&[u8]]) -> Vec<Vec<Part>> {
+fn candidates(ids: &[&[u8]], sample: &[&[u8]]) -> Vec<Vec<Part>> {
     let first = ids[0];
     let mut out = Vec::new();
+    out.extend(sampled_digit_parts(sample));
     out.push(digit_parts(first, false));
     out.push(digit_parts(first, true));
     out.push(hex_parts(first, false));
@@ -91,7 +103,7 @@ fn runs(id: &[u8], pred: impl Fn(u8) -> bool) -> Vec<(usize, usize)> {
 }
 
 /// Build parts from `id`, turning each selected run into fields via `field` and the rest into literals.
-fn with_fields(id: &[u8], selected: &[(usize, usize)], field: impl Fn(&[u8]) -> Vec<Part>) -> Vec<Part> {
+fn with_fields(id: &[u8], selected: &[(usize, usize)], mut field: impl FnMut(&[u8]) -> Vec<Part>) -> Vec<Part> {
     let mut parts = Vec::new();
     let mut pos = 0;
     for &(s, e) in selected {
@@ -117,6 +129,36 @@ fn digit_parts(id: &[u8], last_only: bool) -> Vec<Part> {
     with_fields(id, &rs, |run| {
         if run.len() > 1 && run[0] == b'0' { vec![Part::DecW(run.len() as u8)] } else { vec![Part::Dec] }
     })
+}
+
+/// Decimal fields for the digit runs of the first ID, fixed-width where the run has the same length
+/// in every sampled ID (with the same number of runs) and a leading zero in at least one of them.
+/// Unlike `digit_parts`, this doesn't depend on whether the first ID happens to have a leading zero.
+fn sampled_digit_parts(sample: &[&[u8]]) -> Option<Vec<Part>> {
+    let digit = |b: u8| b.is_ascii_digit();
+    let first = sample[0];
+    let rs = runs(first, digit);
+    if rs.is_empty() || rs.iter().any(|&(s, e)| e - s > 19) {
+        return None;
+    }
+    let mut fixed = vec![true; rs.len()];
+    let mut zero = vec![false; rs.len()];
+    for id in sample {
+        let r = runs(id, digit);
+        if r.len() != rs.len() {
+            continue;
+        }
+        for (k, (&(s, e), &(s0, e0))) in r.iter().zip(&rs).enumerate() {
+            fixed[k] &= e - s == e0 - s0;
+            zero[k] |= e - s > 1 && id[s] == b'0';
+        }
+    }
+    let mut k = 0;
+    Some(with_fields(first, &rs, |run| {
+        let p = if fixed[k] && zero[k] { Part::DecW(run.len() as u8) } else { Part::Dec };
+        k += 1;
+        vec![p]
+    }))
 }
 
 /// Hex fields for runs of at least 4 hex digits, split into fields of at most 16 digits.
@@ -166,7 +208,7 @@ mod tests {
 
     fn pick(ids: &[&str]) -> String {
         let ids: Vec<&[u8]> = ids.iter().map(|s| s.as_bytes()).collect();
-        choose(&ids).0.to_string()
+        choose(&ids, None).0.to_string()
     }
 
     #[test]
@@ -192,5 +234,18 @@ mod tests {
         let digests: Vec<String> = (0..500u64).map(|i| format!("{:016x}{:016x}", crate::phf::fmix64(i), crate::phf::fmix64(!i))).collect();
         let digests: Vec<&str> = digests.iter().map(|s| s.as_str()).collect();
         assert_eq!(pick(&digests), "{hex:16}{hex:16}");
+        // Fixed-width fields are detected even when the first ID has no leading zero.
+        assert_eq!(pick(&["cw-07-12345", "cw-07-99999", "cw-08-00000", "cw-08-00001"]), "cw-{dec:2}-{dec:5}");
+        // A constant field is kept as a field rather than a literal, so neighbouring chunks share it.
+        let ids: Vec<String> = (0..1000).map(|i| format!("p_00_{}", i * 977)).collect();
+        let ids: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+        assert_eq!(pick(&ids), "p_{dec:2}_{dec}");
+    }
+
+    #[test]
+    fn prefers_previous_template() {
+        let prev = Template::new(vec![Part::Lit(b"x".to_vec()), Part::Dec]).unwrap();
+        let ids: Vec<&[u8]> = vec![b"x1", b"x2", b"x3"];
+        assert_eq!(choose(&ids, Some(&prev)).0, prev);
     }
 }

@@ -11,7 +11,7 @@ pub const ENC_FOR: u8 = 2;
 pub const ENC_PLAIN: u8 = 3;
 
 const CHUNK_HEADER: usize = 8;
-const FIELD_DESC: usize = 32;
+pub const FIELD_DESC: usize = 32;
 
 /// Field values of a chunk, one column per template field.
 pub enum Column<'a> {

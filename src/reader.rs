@@ -12,8 +12,37 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub(crate) enum UnitKind {
-    Derived { template_id: u32, arith: OnceLock<Option<Arith>> },
+    Derived { template_id: u32, index: OnceLock<DerivedIndex> },
     Phf(PhfView),
+}
+
+/// Built on a DERIVED unit's first lookup (one pass over its chunks), so that lookups can reject the
+/// unit without touching the file and binary-search its chunks in memory.
+pub(crate) struct DerivedIndex {
+    arith: Option<Arith>,
+    /// The first key of each chunk of the unit (within the unit), then the unit's last key.
+    keys: Vec<Vec<OwnedVal>>,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum OwnedVal {
+    Int(u64),
+    Str(Box<[u8]>),
+}
+
+fn cmp_owned(a: &[OwnedVal], q: &[Val]) -> Ordering {
+    for (x, y) in a.iter().zip(q) {
+        let o = match (x, y) {
+            (OwnedVal::Int(x), Val::Int(y)) => x.cmp(y),
+            (OwnedVal::Str(x), Val::Str(y)) => (**x).cmp(*y),
+            (OwnedVal::Int(_), Val::Str(_)) => Ordering::Less,
+            (OwnedVal::Str(_), Val::Int(_)) => Ordering::Greater,
+        };
+        if o != Ordering::Equal {
+            return o;
+        }
+    }
+    a.len().cmp(&q.len())
 }
 
 /// A DERIVED unit whose keys are one arithmetic sequence across all its chunks: constant fields
@@ -66,7 +95,7 @@ impl Reader {
                     if template_id as usize >= manifest.templates.len() {
                         return Err(Error::Corrupt("DERIVED unit has a bad template id".into()));
                     }
-                    UnitKind::Derived { template_id, arith: OnceLock::new() }
+                    UnitKind::Derived { template_id, index: OnceLock::new() }
                 }
                 UNIT_PHF => UnitKind::Phf(PhfView::read(&mmap, u.offset, u.len)?),
                 k => return Err(Error::Unsupported(format!("unknown inverse unit kind {k}"))),
@@ -181,17 +210,17 @@ impl Reader {
                     }
                     _ => None,
                 },
-                UnitKind::Derived { template_id, arith } => {
-                    let arith = match arith.get() {
-                        Some(a) => a,
+                UnitKind::Derived { template_id, index } => {
+                    let index = match index.get() {
+                        Some(x) => x,
                         None => {
-                            let a = self.unit_arith(u, *template_id)?;
-                            arith.get_or_init(|| a)
+                            let x = self.derived_index(u, *template_id)?;
+                            index.get_or_init(|| x)
                         }
                     };
-                    match arith {
+                    match &index.arith {
                         Some(a) => self.find_arith(u, *template_id, a, id, &mut buf)?,
-                        None => self.find_derived(u, *template_id, id, &mut buf)?,
+                        None => self.find_derived(u, *template_id, &index.keys, id, &mut buf)?,
                     }
                 }
             };
@@ -205,29 +234,54 @@ impl Reader {
         Ok(None)
     }
 
-    fn find_derived(&self, u: &Unit, tid: u32, id: &[u8], buf: &mut Vec<u8>) -> Result<Option<u64>> {
+    fn derived_index(&self, u: &Unit, tid: u32) -> Result<DerivedIndex> {
+        let arith = self.unit_arith(u, tid)?;
+        let mut keys = Vec::new();
+        if arith.is_none() {
+            let bits = self.manifest.chunk_bits;
+            let (c_lo, c_hi) = (u.lo >> bits, (u.hi - 1) >> bits);
+            let mut buf = Vec::new();
+            for ci in c_lo..=c_hi {
+                keys.push(self.owned_key((ci << bits).max(u.lo), tid, &mut buf)?);
+            }
+            keys.push(self.owned_key(u.hi - 1, tid, &mut buf)?);
+        }
+        Ok(DerivedIndex { arith, keys })
+    }
+
+    /// The key of the ID at `idx` under template `tid`.
+    fn owned_key(&self, idx: u64, tid: u32, buf: &mut Vec<u8>) -> Result<Vec<OwnedVal>> {
+        buf.clear();
+        self.get(idx, buf)?;
+        let mut key = Vec::new();
+        if !self.manifest.templates[tid as usize].parse(buf, &mut key) {
+            return Err(Error::Corrupt(format!("ID at {idx} does not match its DERIVED unit's template")));
+        }
+        Ok(key.iter().map(|v| match v {
+            Val::Int(x) => OwnedVal::Int(*x),
+            Val::Str(s) => OwnedVal::Str((*s).into()),
+        }).collect())
+    }
+
+    /// `keys`: the unit's `DerivedIndex::keys`.
+    fn find_derived(&self, u: &Unit, tid: u32, keys: &[Vec<OwnedVal>], id: &[u8], buf: &mut Vec<u8>) -> Result<Option<u64>> {
         let t = &self.manifest.templates[tid as usize];
         let mut q = Vec::new();
         if !t.parse(id, &mut q) {
             return Ok(None);
         }
-        // Find the last chunk whose first key (within the unit) is <= q.
-        let bits = self.manifest.chunk_bits;
-        let first_in = |ci: u64| (ci << bits).max(u.lo);
-        let (c_lo, c_hi) = (u.lo >> bits, (u.hi - 1) >> bits);
-        let (mut a, mut b) = (c_lo, c_hi + 1);
-        while a < b {
-            let mid = a + (b - a) / 2;
-            if self.cmp_key(first_in(mid), tid, &q, buf)? == Ordering::Greater {
-                b = mid;
-            } else {
-                a = mid + 1;
-            }
-        }
-        if a == c_lo {
+        let (firsts, last) = keys.split_at(keys.len() - 1);
+        if cmp_owned(&last[0], &q) == Ordering::Less {
             return Ok(None);
         }
-        let ci = a - 1;
+        // The last chunk whose first key (within the unit) is <= q.
+        let bits = self.manifest.chunk_bits;
+        let first_in = |ci: u64| (ci << bits).max(u.lo);
+        let a = firsts.partition_point(|k| cmp_owned(k, &q) != Ordering::Greater);
+        if a == 0 {
+            return Ok(None);
+        }
+        let ci = (u.lo >> bits) + a as u64 - 1;
         let (start, end) = (first_in(ci), ((ci + 1) << bits).min(u.hi));
         let hit = match self.seq_position(ci as usize, tid, &q)? {
             // Arithmetic on the chunk's sequence column gives the only possible position.
