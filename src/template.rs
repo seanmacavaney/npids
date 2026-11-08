@@ -13,7 +13,8 @@ pub const KIND_STR: u8 = 5;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Part {
     Lit(Vec<u8>),
-    Dec,
+    /// A decimal number, zero-padded to at least this many digits (0: no leading zeros).
+    Dec(u8),
     DecW(u8),
     HexL(u8),
     HexU(u8),
@@ -25,14 +26,14 @@ impl Part {
         !matches!(self, Part::Lit(_))
     }
     pub fn is_int(&self) -> bool {
-        matches!(self, Part::Dec | Part::DecW(_) | Part::HexL(_) | Part::HexU(_))
+        matches!(self, Part::Dec(_) | Part::DecW(_) | Part::HexL(_) | Part::HexU(_))
     }
     /// Length in bytes if the part always matches a fixed number of bytes.
     pub fn fixed_len(&self) -> Option<usize> {
         match self {
             Part::Lit(l) => Some(l.len()),
             Part::DecW(w) | Part::HexL(w) | Part::HexU(w) => Some(*w as usize),
-            Part::Dec | Part::Str => None,
+            Part::Dec(_) | Part::Str => None,
         }
     }
 }
@@ -79,7 +80,8 @@ impl Template {
                         return invalid("adjacent literals");
                     }
                 }
-                Part::Dec => match next {
+                Part::Dec(w) if *w > 20 => return invalid("DEC width out of range"),
+                Part::Dec(_) => match next {
                     None => {}
                     Some(Part::Lit(l)) if !l[0].is_ascii_digit() => {}
                     _ => return invalid("DEC must be last or followed by a literal starting with a non-digit"),
@@ -128,12 +130,12 @@ impl Template {
                     }
                     pos += l.len();
                 }
-                Part::Dec => {
+                Part::Dec(w) => {
                     let run = rest.iter().take_while(|b| b.is_ascii_digit()).count();
                     if run == 0 {
                         return false;
                     }
-                    let take = if rest[0] == b'0' { 1 } else { run };
+                    let take = if *w == 0 && rest[0] == b'0' { 1 } else { run };
                     match parse_dec(&rest[..take]) {
                         Some(v) => out.push(Val::Int(v)),
                         None => return false,
@@ -195,7 +197,7 @@ impl Template {
                     k += 1;
                     match (p, v) {
                         (Part::Str, Val::Str(s)) => out.extend_from_slice(s),
-                        (Part::Dec, Val::Int(x)) => write_dec(x, 0, out),
+                        (Part::Dec(w), Val::Int(x)) => write_dec(x, *w as usize, out),
                         (Part::DecW(w), Val::Int(x)) => write_dec(x, *w as usize, out),
                         (Part::HexL(w), Val::Int(x)) => write_hex(x, *w as usize, false, out),
                         (Part::HexU(w), Val::Int(x)) => write_hex(x, *w as usize, true, out),
@@ -214,8 +216,8 @@ impl Template {
                 Part::Lit(l) => {
                     w.u8(KIND_LIT).u8(0).u16(l.len() as u16).bytes(l);
                 }
-                Part::Dec => {
-                    w.u8(KIND_DEC).u8(0).u16(0);
+                Part::Dec(x) => {
+                    w.u8(KIND_DEC).u8(*x).u16(0);
                 }
                 Part::DecW(x) => {
                     w.u8(KIND_DECW).u8(*x).u16(0);
@@ -251,7 +253,7 @@ impl Template {
                     *pos += lit_len;
                     Part::Lit(l)
                 }
-                KIND_DEC => Part::Dec,
+                KIND_DEC => Part::Dec(width),
                 KIND_DECW => Part::DecW(width),
                 KIND_HEXL => Part::HexL(width),
                 KIND_HEXU => Part::HexU(width),
@@ -277,7 +279,8 @@ impl fmt::Display for Template {
                         }
                     }
                 }
-                Part::Dec => f.write_str("{dec}")?,
+                Part::Dec(0) => f.write_str("{dec}")?,
+                Part::Dec(w) => write!(f, "{{dec:{w}+}}")?,
                 Part::DecW(w) => write!(f, "{{dec:{w}}}")?,
                 Part::HexL(w) => write!(f, "{{hex:{w}}}")?,
                 Part::HexU(w) => write!(f, "{{HEX:{w}}}")?,
@@ -374,14 +377,14 @@ mod tests {
 
     #[test]
     fn parsing() {
-        let d = t(vec![lit("D"), Part::Dec]);
+        let d = t(vec![lit("D"), Part::Dec(0)]);
         assert_eq!(parse(&d, "D1"), Some(vec!["1".into()]));
         assert_eq!(parse(&d, "D0"), Some(vec!["0".into()]));
         assert_eq!(parse(&d, "D01"), None);
         assert_eq!(parse(&d, "D"), None);
         assert_eq!(parse(&d, "D18446744073709551615"), Some(vec!["18446744073709551615".into()]));
         assert_eq!(parse(&d, "D18446744073709551616"), None);
-        let x = t(vec![lit("doc-"), Part::DecW(5), lit("-"), Part::Dec]);
+        let x = t(vec![lit("doc-"), Part::DecW(5), lit("-"), Part::Dec(0)]);
         assert_eq!(parse(&x, "doc-00012-7"), Some(vec!["12".into(), "7".into()]));
         assert_eq!(parse(&x, "doc-0012-7"), None);
         let h = t(vec![Part::HexL(8), lit("-"), Part::HexL(4)]);
@@ -391,32 +394,45 @@ mod tests {
         assert_eq!(parse(&s, "xabc.txt"), Some(vec!["'abc'".into()]));
         assert_eq!(parse(&s, "x.txt"), Some(vec!["''".into()]));
         assert_eq!(parse(&s, "x.tx"), None);
-        let m = t(vec![Part::Dec, lit("a"), Part::Str, Part::DecW(2)]);
+        let m = t(vec![Part::Dec(0), lit("a"), Part::Str, Part::DecW(2)]);
         assert_eq!(parse(&m, "5aqq07"), Some(vec!["5".into(), "'qq'".into(), "7".into()]));
         assert_eq!(parse(&m, "5a7"), None);
+        // A minimum width takes the whole digit run.
+        let p = t(vec![lit("GX-"), Part::Dec(7)]);
+        assert_eq!(parse(&p, "GX-0000949"), Some(vec!["949".into()]));
+        assert_eq!(parse(&p, "GX-11579329"), Some(vec!["11579329".into()]));
+        assert_eq!(p.to_string(), "GX-{dec:7+}");
     }
 
     #[test]
     fn validity() {
-        assert!(Template::new(vec![Part::Dec, Part::Dec]).is_err());
-        assert!(Template::new(vec![Part::Dec, lit("1")]).is_err());
-        assert!(Template::new(vec![Part::Dec, Part::Str]).is_err());
-        assert!(Template::new(vec![Part::Str, Part::Dec]).is_err());
+        assert!(Template::new(vec![Part::Dec(0), Part::Dec(0)]).is_err());
+        assert!(Template::new(vec![Part::Dec(0), lit("1")]).is_err());
+        assert!(Template::new(vec![Part::Dec(0), Part::Str]).is_err());
+        assert!(Template::new(vec![Part::Str, Part::Dec(0)]).is_err());
         assert!(Template::new(vec![Part::Str, lit("a"), Part::Str]).is_err());
         assert!(Template::new(vec![lit("a"), lit("b")]).is_err());
         assert!(Template::new(vec![lit("")]).is_err());
         assert!(Template::new(vec![Part::HexL(17)]).is_err());
-        assert!(Template::new(vec![Part::Dec, lit("-"), Part::Str, Part::HexL(4)]).is_ok());
+        assert!(Template::new(vec![Part::Dec(21)]).is_err());
+        assert!(Template::new(vec![Part::Dec(3), lit("1")]).is_err());
+        assert!(Template::new(vec![Part::Dec(3), lit("-"), Part::Dec(2)]).is_ok());
+        assert!(Template::new(vec![Part::Dec(0), lit("-"), Part::Str, Part::HexL(4)]).is_ok());
     }
 
     #[test]
     fn roundtrip_rule() {
-        let tm = t(vec![lit("D"), Part::Dec]);
+        let tm = t(vec![lit("D"), Part::Dec(0)]);
         let (mut v, mut s) = (Vec::new(), Vec::new());
         assert!(tm.parse_exact(b"D123", &mut v, &mut s));
         assert!(!tm.parse_exact(b"D0123", &mut v, &mut s));
         let tm = t(vec![Part::DecW(3)]);
         assert!(tm.parse_exact(b"007", &mut v, &mut s));
+        let tm = t(vec![Part::Dec(3)]);
+        assert!(tm.parse_exact(b"007", &mut v, &mut s));
+        assert!(tm.parse_exact(b"1234", &mut v, &mut s));
+        assert!(!tm.parse_exact(b"7", &mut v, &mut s));
+        assert!(!tm.parse_exact(b"0007", &mut v, &mut s));
         let tm = t(vec![Part::HexL(4)]);
         assert!(tm.parse_exact(b"00af", &mut v, &mut s));
         assert!(!tm.parse_exact(b"00AF", &mut v, &mut s));
@@ -424,12 +440,12 @@ mod tests {
 
     #[test]
     fn serialization() {
-        let tm = t(vec![lit("a{b}\x01"), Part::DecW(3), Part::Str, Part::HexU(4)]);
+        let tm = t(vec![lit("a{b}\x01"), Part::Dec(4), lit("-"), Part::DecW(3), Part::Str, Part::HexU(4)]);
         let bytes = tm.to_bytes();
         let mut pos = 0;
         let back = Template::from_bytes(&bytes, &mut pos).unwrap();
         assert_eq!(pos, bytes.len());
         assert_eq!(back, tm);
-        assert_eq!(tm.to_string(), "a{{b}}\\x01{dec:3}{str}{HEX:4}");
+        assert_eq!(tm.to_string(), "a{{b}}\\x01{dec:4+}-{dec:3}{str}{HEX:4}");
     }
 }

@@ -167,7 +167,7 @@ A template is a sequence of parts. Each part is a literal or a field:
 | `kind` | Name | Matches | Value |
 |------:|------|---------|-------|
 | 0 | `LIT` | the literal bytes (at least one) | none |
-| 1 | `DEC` | a decimal number without leading zeros (`0`, or a digit `1-9` followed by digits) | u64 |
+| 1 | `DEC` | a decimal number zero-padded to at least `width` digits, `0 <= width <= 20` (`width = 0`: no leading zeros) | u64 |
 | 2 | `DECW` | exactly `width` digits, `1 <= width <= 20` | u64 |
 | 3 | `HEXL` | exactly `width` digits from `0-9a-f`, `1 <= width <= 16` | u64 |
 | 4 | `HEXU` | exactly `width` digits from `0-9A-F`, `1 <= width <= 16` | u64 |
@@ -185,15 +185,15 @@ invalid templates.
 **Parsing** an ID with a template reads the parts in order from position 0:
 
 - `LIT`: the bytes at the position must equal the literal.
-- `DEC`: take the run of digits at the position (at least one). If it starts with `0`, take only that
-  `0`.
+- `DEC`: take the run of digits at the position (at least one). If `width = 0` and it starts with `0`,
+  take only that `0`.
 - `DECW`, `HEXL`, `HEXU`: take exactly `width` bytes, all from the part's character set.
 - `STR`: take everything up to `len(id) - s`, where `s` is the total width of the parts after it
   (which must not be before the position).
 
 The ID matches if every part succeeds, no `DEC` or `DECW` value exceeds `2^64 - 1`, and the parts end
-exactly at the end of the ID. **Formatting** writes the parts in order (`DEC` without leading zeros,
-`DECW` zero-padded to `width`, hex at exactly `width` digits).
+exactly at the end of the ID. **Formatting** writes the parts in order (`DEC` zero-padded to at least
+`width` digits, `DECW` zero-padded to `width`, hex at exactly `width` digits).
 
 An ID may be stored with a template only if parsing succeeds and formatting the parsed values gives back
 the ID byte for byte. Writers MUST check this for every ID; readers rely on it. Because parsing is
@@ -205,6 +205,7 @@ Examples, written in the human-readable form used by `describe()`:
 - `{dec}`: msmarco-passage
 - `{hex:8}-{hex:4}-{hex:4}-{hex:4}-{hex:12}`: a lowercase UUID
 - `{hex:16}{hex:16}`: a 32-digit hex digest
+- `GX{dec:3}-{dec:2}-{dec:7+}`: GOV2 (the last field is padded to 7 digits but can be longer)
 - `{str}`: anything
 
 Choosing a template is up to the writer. A chunk has exactly one template, which every ID in the chunk

@@ -284,8 +284,8 @@ impl ChunkInfo {
                     out.extend_from_slice(self.str(file, k, j));
                     k += 1;
                 }
-                Part::Dec => {
-                    write_dec(self.int(file, k, j), 0, out);
+                Part::Dec(w) => {
+                    write_dec(self.int(file, k, j), *w as usize, out);
                     k += 1;
                 }
                 Part::DecW(w) => {

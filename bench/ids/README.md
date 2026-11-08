@@ -46,7 +46,7 @@ Times are for 10k lookups.
 | neuclir_1_zh | 3.2M | 10s | 3s | 76.6MB | 55.8MB | 13.5ms | 1.0ms / 0.6ms | 19.8ms | 1.9ms |
 | beir_fever | 5.4M | 9s | 4s | 1.1GB | 137.3MB | 4.2ms | 0.9ms / 0.3ms | 10.3ms | 1.5ms |
 | pubmed | 41.0M | 75s | 27s | 568.6MB | 232.6MB | 3.9ms | 0.6ms / 0.3ms | 6.1ms | 1.3ms |
-| gov2 | 25.2M | 28s | 16s | 455.2MB | 467.3MB | 40.9ms | 0.7ms / 0.3ms | 64.9ms | 1.5ms |
+| gov2 | 25.2M | 28s | 10s | 455.2MB | 94.9MB | 40.9ms | 0.9ms / 0.5ms | 64.9ms | 4.8ms |
 | car-v2.0 | 29.8M | 54s | 18s | 809.9MB | 539.9MB | 3.7ms | 0.9ms / 0.5ms | 6.6ms | 6.1ms |
 | clueweb22-b-en | 87.2M | 155s | 36s | 861.8MB | 183.8MB | 34.9ms | 1.0ms / 0.5ms | 52.4ms | 5.5ms |
 | msmarco-v2.1-segmented | 113.5M | 137s | 61s | 3.1GB | 816.4MB | 83.0ms | 1.3ms / 0.8ms | 111.3ms | 6.9ms |
@@ -58,9 +58,8 @@ clueweb12 was not built with v1 (`--v1-max 150000000`).
 Notes:
 
 - gov2's last field is a byte offset, zero-padded to 7 digits but 8 digits past 10M
-  (`GX000-71-11579329`). No template part expresses "at least 7 digits", so its chunks fall back to
-  `GX0..{str}`; it is the only list where v2 is (slightly) larger than v1.
-- Lists whose IDs increase (car, the msmarco v2 lists, clueweb) get DERIVED inverse units at no
+  (`GX000-71-11579329`); it uses `GX{dec:3}-{dec:2}-{dec:7+}` (a minimum-width `DEC`).
+- Lists whose IDs increase (car, gov2, the msmarco v2 lists, clueweb) get DERIVED inverse units at no
   storage cost, and inverse lookups there are a binary search (5-7ms per 10k) rather than a hash
   probe (1.3-2ms). The others get a perfect hash.
 - clueweb12's IDs alternate between `...tw-...` and `...wb-...` segments, which need different

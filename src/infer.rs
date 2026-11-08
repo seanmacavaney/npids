@@ -127,12 +127,13 @@ fn digit_parts(id: &[u8], last_only: bool) -> Vec<Part> {
         rs.drain(..rs.len() - 1);
     }
     with_fields(id, &rs, |run| {
-        if run.len() > 1 && run[0] == b'0' { vec![Part::DecW(run.len() as u8)] } else { vec![Part::Dec] }
+        if run.len() > 1 && run[0] == b'0' { vec![Part::DecW(run.len() as u8)] } else { vec![Part::Dec(0)] }
     })
 }
 
-/// Decimal fields for the digit runs of the first ID, fixed-width where the run has the same length
-/// in every sampled ID (with the same number of runs) and a leading zero in at least one of them.
+/// Decimal fields for the digit runs of the first ID, using the sampled IDs (those with the same number
+/// of runs) to pick each field's kind: where some run has a leading zero, fixed width if all runs have
+/// the same length, else padded to the shortest length (if the zero-padded runs are the shortest).
 /// Unlike `digit_parts`, this doesn't depend on whether the first ID happens to have a leading zero.
 fn sampled_digit_parts(sample: &[&[u8]]) -> Option<Vec<Part>> {
     let digit = |b: u8| b.is_ascii_digit();
@@ -141,21 +142,28 @@ fn sampled_digit_parts(sample: &[&[u8]]) -> Option<Vec<Part>> {
     if rs.is_empty() || rs.iter().any(|&(s, e)| e - s > 19) {
         return None;
     }
-    let mut fixed = vec![true; rs.len()];
-    let mut zero = vec![false; rs.len()];
+    let (mut min, mut max) = (vec![usize::MAX; rs.len()], vec![0; rs.len()]);
+    let mut zero: Vec<Option<usize>> = vec![None; rs.len()]; // shortest zero-padded run
     for id in sample {
         let r = runs(id, digit);
         if r.len() != rs.len() {
             continue;
         }
-        for (k, (&(s, e), &(s0, e0))) in r.iter().zip(&rs).enumerate() {
-            fixed[k] &= e - s == e0 - s0;
-            zero[k] |= e - s > 1 && id[s] == b'0';
+        for (k, &(s, e)) in r.iter().enumerate() {
+            min[k] = min[k].min(e - s);
+            max[k] = max[k].max(e - s);
+            if e - s > 1 && id[s] == b'0' {
+                zero[k] = Some(zero[k].map_or(e - s, |z| z.min(e - s)));
+            }
         }
     }
     let mut k = 0;
-    Some(with_fields(first, &rs, |run| {
-        let p = if fixed[k] && zero[k] { Part::DecW(run.len() as u8) } else { Part::Dec };
+    Some(with_fields(first, &rs, |_| {
+        let p = match zero[k] {
+            Some(z) if min[k] == max[k] => Part::DecW(z as u8),
+            Some(z) if z == min[k] => Part::Dec(z as u8),
+            _ => Part::Dec(0),
+        };
         k += 1;
         vec![p]
     }))
@@ -240,11 +248,13 @@ mod tests {
         let ids: Vec<String> = (0..1000).map(|i| format!("p_00_{}", i * 977)).collect();
         let ids: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
         assert_eq!(pick(&ids), "p_{dec:2}_{dec}");
+        // Zero-padded to a minimum width that longer values exceed (GOV2 byte offsets).
+        assert_eq!(pick(&["GX000-00-0000000", "GX000-00-9990949", "GX000-00-11579329", "GX000-01-0000000"]), "GX{dec:3}-{dec:2}-{dec:7+}");
     }
 
     #[test]
     fn prefers_previous_template() {
-        let prev = Template::new(vec![Part::Lit(b"x".to_vec()), Part::Dec]).unwrap();
+        let prev = Template::new(vec![Part::Lit(b"x".to_vec()), Part::Dec(0)]).unwrap();
         let ids: Vec<&[u8]> = vec![b"x1", b"x2", b"x3"];
         assert_eq!(choose(&ids, Some(&prev)).0, prev);
     }
