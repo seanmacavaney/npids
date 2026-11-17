@@ -35,7 +35,7 @@ jobs:
           - { name: manylinux-aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: '2014' }
           - { name: musllinux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-musl, manylinux: musllinux_1_2 }
           - { name: macos-x86_64, os: macos-15-intel, target: x86_64 }
-          - { name: macos-arm64, os: macos-14, target: aarch64 }
+          - { name: macos-arm64, os: macos-15, target: aarch64 }
           - { name: windows-x86_64, os: windows-latest, target: x64 }
     runs-on: ${{ matrix.os }}
     steps:
@@ -48,7 +48,7 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
           args: --release --out dist
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: wheel-${{ matrix.name }}
           path: dist
@@ -62,7 +62,7 @@ jobs:
           command: sdist
           args: --out dist
       - run: pipx run twine check --strict dist/*
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: sdist
           path: dist
@@ -79,7 +79,7 @@ jobs:
           - { wheel: manylinux-x86_64, os: ubuntu-latest }
           - { wheel: manylinux-aarch64, os: ubuntu-24.04-arm }
           - { wheel: macos-x86_64, os: macos-15-intel }
-          - { wheel: macos-arm64, os: macos-14 }
+          - { wheel: macos-arm64, os: macos-15 }
           - { wheel: windows-x86_64, os: windows-latest }
     runs-on: ${{ matrix.os }}
     steps:
@@ -87,7 +87,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           name: wheel-${{ matrix.wheel }}
           path: dist
@@ -112,7 +112,7 @@ jobs:
     container: python:${{ matrix.python }}-alpine
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           name: wheel-musllinux-x86_64
           path: dist
@@ -133,7 +133,7 @@ jobs:
         with:
           python-version: '3.12'
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           name: sdist
           path: dist
@@ -154,7 +154,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
