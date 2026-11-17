@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "npids"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "crc32c",
  "memmap2",
