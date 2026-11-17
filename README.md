@@ -18,8 +18,11 @@ pip install npids
 ```
 
 Prebuilt wheels are available for Linux (x86_64, aarch64, musl x86_64), macOS (x86_64, arm64) and
-Windows (x86_64), for CPython 3.9 and later. Other platforms build from source, which needs a Rust
-toolchain.
+Windows (x86_64), for CPython 3.9 and later, including free-threaded CPython 3.14t and 3.15t (except
+on musl). Other platforms build from source, which needs a Rust toolchain.
+
+On free-threaded Python, npids runs without the GIL: many threads can share one `Lookup`. A builder
+should only be used from one thread at a time.
 
 Build a lookup:
 

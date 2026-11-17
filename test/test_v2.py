@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 
 import numpy as np
@@ -18,6 +19,53 @@ class TestV2(unittest.TestCase):
 
     def path(self, name='x'):
         return os.path.join(self.dir, name)
+
+    def test_concurrent_readers(self):
+        # Many threads share one Lookup, starting together so that the lazily-initialised chunk
+        # state is first touched concurrently. On free-threaded Python this runs without a GIL.
+        ids = ([f'D{i}' for i in range(70_000)]  # derived inverse (sorted sequence)
+               + [f'q{(i * 7919) % 100_003:x}' for i in range(70_000)])  # hashed inverse
+        Lookup.build(ids, self.path(), chunk_bits=12)
+        lk = Lookup(self.path())
+        n_threads, barrier, errors = 8, threading.Barrier(8), []
+
+        def work(seed):
+            try:
+                rng = np.random.default_rng(seed)
+                barrier.wait()
+                for _ in range(20):
+                    idxs = rng.integers(0, len(ids), 500)
+                    expected = [ids[i] for i in idxs]
+                    if lk.fwd[idxs].tolist() != expected:
+                        raise AssertionError('fwd mismatch')
+                    if lk.inv[np.array(expected)].tolist() != idxs.tolist():
+                        raise AssertionError('inv mismatch')
+                    i = int(idxs[0])
+                    if lk.fwd[i] != ids[i] or lk.inv[ids[i]] != i:
+                        raise AssertionError('scalar mismatch')
+            except BaseException as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=work, args=(s,)) for s in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+
+    def test_concurrent_builders(self):
+        def build(k):
+            Lookup.build([f'{k}-{i}' for i in range(20_000)], self.path(f'b{k}'))
+
+        threads = [threading.Thread(target=build, args=(k,)) for k in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        for k in range(6):
+            lk = Lookup(self.path(f'b{k}'))
+            self.assertEqual(len(lk), 20_000)
+            self.assertEqual(lk.inv[f'{k}-123'], 123)
 
     def test_fwd_forms(self):
         ids = [f'doc{i}' for i in range(100)]

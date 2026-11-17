@@ -1,4 +1,5 @@
-# Builds wheels for every supported platform plus an sdist, install-tests them on CPython 3.9-3.15,
+# Builds abi3 wheels (CPython 3.9+) and free-threaded wheels (3.14t, 3.15t) for every supported
+# platform plus an sdist, install-tests them on each Python version,
 # and publishes to PyPI (trusted publishing) when a v* tag is pushed.
 name: Build, test and release
 
@@ -52,6 +53,75 @@ jobs:
         with:
           name: wheel-${{ matrix.name }}
           path: dist
+
+  # Free-threaded CPython (3.14t, 3.15t) can't load abi3 wheels, so these are version-specific.
+  # Linux uses manylinux_2_28 because that's what numpy's free-threaded wheels need anyway.
+  wheels-ft:
+    name: wheel ${{ matrix.name }} py${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.14t', '3.15t']
+        name: [manylinux-x86_64, manylinux-aarch64, macos-x86_64, macos-arm64, windows-x86_64]
+        include:
+          - { name: manylinux-x86_64, os: ubuntu-24.04, target: x86_64, manylinux: '2_28' }
+          - { name: manylinux-aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: '2_28' }
+          - { name: macos-x86_64, os: macos-15-intel, target: x86_64 }
+          - { name: macos-arm64, os: macos-15, target: aarch64 }
+          - { name: windows-x86_64, os: windows-latest, target: x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        id: py
+        if: ${{ !startsWith(matrix.os, 'ubuntu') }}
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux || 'auto' }}
+          # Inside the manylinux container the interpreters are on PATH as python3.14t etc.
+          args: --release --out dist -i ${{ startsWith(matrix.os, 'ubuntu') && format('python{0}', matrix.python) || steps.py.outputs.python-path }}
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheel-ft-${{ matrix.name }}-${{ matrix.python }}
+          path: dist
+
+  test-wheels-ft:
+    name: test ${{ matrix.name }} py${{ matrix.python }}
+    needs: wheels-ft
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.14t', '3.15t']
+        name: [manylinux-x86_64, manylinux-aarch64, macos-x86_64, macos-arm64, windows-x86_64]
+        include:
+          - { name: manylinux-x86_64, os: ubuntu-24.04 }
+          - { name: manylinux-aarch64, os: ubuntu-24.04-arm }
+          - { name: macos-x86_64, os: macos-15-intel }
+          - { name: macos-arm64, os: macos-15 }
+          - { name: windows-x86_64, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheel-ft-${{ matrix.name }}-${{ matrix.python }}
+          path: dist
+      - run: python -m pip install numpy pytest
+      - run: python -m pip install --no-index --find-links dist npids
+      # Importing a module that doesn't declare free-threading support re-enables the GIL with a
+      # RuntimeWarning; treat that as a failure and check the GIL is still off afterwards.
+      - shell: bash
+        run: |
+          python -W error::RuntimeWarning -c "import npids, sys; print(npids.__version__, npids.__file__, sys.version); assert not sys._is_gil_enabled()"
+          cp -r test "$RUNNER_TEMP/test"
+          cd "$RUNNER_TEMP"
+          python -W error::RuntimeWarning -m pytest -q test
 
   sdist:
     runs-on: ubuntu-24.04
@@ -145,7 +215,7 @@ jobs:
           python -m pytest -q test
 
   publish:
-    needs: [cargo-test, test-wheels, test-musllinux, test-sdist]
+    needs: [cargo-test, test-wheels, test-wheels-ft, test-musllinux, test-sdist]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     environment:
@@ -166,5 +236,6 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           # The tag must match the version the packages were built with.
           ls dist/npids-"$version".tar.gz
-          test "$(ls dist/*.whl | wc -l)" -eq 6
+          test "$(ls dist/*abi3*.whl | wc -l)" -eq 6
+          test "$(ls dist/*cp31?t*.whl | wc -l)" -eq 10
       - uses: pypa/gh-action-pypi-publish@release/v1
