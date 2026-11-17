@@ -38,7 +38,7 @@ class Lookup(metaclass=ABCMeta):
     ``lookup.fwd[i]`` gives the ID at index ``i``; ``lookup.inv[id]`` gives the first index of ``id``.
     ``lookup[x]`` routes to one or the other based on the type of ``x``.
 
-    Opening a file written by npids < 0.2 (format v0/v1) returns a ``npids.legacy.Lookup``, which
+    Opening a file written by npids 0.x (format v0/v1) returns a ``npids.legacy.Lookup``, which
     supports the same lookups but cannot be appended to; see :func:`upgrade`.
     """
 
@@ -123,7 +123,7 @@ class Lookup(metaclass=ABCMeta):
     def builder(path, build_inv: bool = True, chunk_bits: int = 16, meta: Optional[dict] = None, min_block=None):
         """Create a file, or append to an existing one. Nothing is committed if the block raises.
 
-        ``min_block`` is accepted for compatibility with npids < 0.2 and ignored.
+        ``min_block`` is accepted for compatibility with npids 0.x and ignored.
         """
         b = Builder(path, build_inv=build_inv, chunk_bits=chunk_bits, meta=meta)
         try:

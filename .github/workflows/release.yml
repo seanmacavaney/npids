@@ -1,59 +1,170 @@
-name: Release
+# Builds wheels for every supported platform plus an sdist, install-tests them on CPython 3.9-3.14,
+# and publishes to PyPI (trusted publishing) when a v* tag is pushed.
+name: Build, test and release
 
 on:
-  release:
-    types: [created]
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
 jobs:
+  cargo-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --release
+
+  # One abi3 wheel per platform covers CPython 3.9+.
   wheels:
+    name: wheel ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, target: x86_64, manylinux: '2014' }
-          - { os: ubuntu-latest, target: aarch64, manylinux: '2014' }
-          - { os: macos-14, target: aarch64 }
-          - { os: macos-13, target: x86_64 }
-          - { os: windows-latest, target: x64 }
+          - { name: manylinux-x86_64, os: ubuntu-latest, target: x86_64, manylinux: '2014' }
+          - { name: manylinux-aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: '2014' }
+          - { name: musllinux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-musl, manylinux: musllinux_1_2 }
+          - { name: macos-x86_64, os: macos-15-intel, target: x86_64 }
+          - { name: macos-arm64, os: macos-14, target: aarch64 }
+          - { name: windows-x86_64, os: windows-latest, target: x64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
           args: --release --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
-          name: wheels-${{ matrix.os }}-${{ matrix.target }}
+          name: wheel-${{ matrix.name }}
           path: dist
 
   sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --out dist
-      - uses: actions/upload-artifact@v4
+      - run: pipx run twine check --strict dist/*
+      - uses: actions/upload-artifact@v5
         with:
           name: sdist
           path: dist
 
-  publish:
-    needs: [wheels, sdist]
-    if: github.event_name == 'release'
+  test-wheels:
+    name: test ${{ matrix.wheel }} py${{ matrix.python }}
+    needs: wheels
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+        wheel: [manylinux-x86_64, manylinux-aarch64, macos-x86_64, macos-arm64, windows-x86_64]
+        include:
+          - { wheel: manylinux-x86_64, os: ubuntu-latest }
+          - { wheel: manylinux-aarch64, os: ubuntu-24.04-arm }
+          - { wheel: macos-x86_64, os: macos-15-intel }
+          - { wheel: macos-arm64, os: macos-14 }
+          - { wheel: windows-x86_64, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v6
+        with:
+          name: wheel-${{ matrix.wheel }}
+          path: dist
+      - run: python -m pip install numpy pytest
+      - run: python -m pip install --no-index --find-links dist npids
+      # Run from a temp dir copy so the tests import the installed wheel, not the source tree.
+      - shell: bash
+        run: |
+          python -c "import npids, sys; print(npids.__version__, npids.__file__, sys.version)"
+          cp -r test "$RUNNER_TEMP/test"
+          cd "$RUNNER_TEMP"
+          python -m pytest -q test
+
+  test-musllinux:
+    name: test musllinux-x86_64 py${{ matrix.python }}
+    needs: wheels
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+    runs-on: ubuntu-latest
+    container: python:${{ matrix.python }}-alpine
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v6
+        with:
+          name: wheel-musllinux-x86_64
+          path: dist
+      - run: python -m pip install --only-binary=:all: numpy pytest
+      - run: python -m pip install --no-index --find-links dist npids
+      - run: |
+          python -c "import npids, sys; print(npids.__version__, npids.__file__, sys.version)"
+          cp -r test /tmp/test
+          cd /tmp
+          python -m pytest -q test
+
+  test-sdist:
+    needs: sdist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v6
+        with:
+          name: sdist
+          path: dist
+      - run: python -m pip install numpy pytest
+      - run: python -m pip install dist/*.tar.gz
+      - run: |
+          cp -r test "$RUNNER_TEMP/test"
+          cd "$RUNNER_TEMP"
+          python -m pytest -q test
+
+  publish:
+    needs: [cargo-test, test-wheels, test-musllinux, test-sdist]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/npids/${{ steps.version.outputs.version }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true
-      - uses: PyO3/maturin-action@v1
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        with:
-          command: upload
-          args: --non-interactive --skip-existing dist/*
+      - id: version
+        shell: bash
+        run: |
+          ls -l dist
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # The tag must match the version the packages were built with.
+          ls dist/npids-"$version".tar.gz
+          test "$(ls dist/*.whl | wc -l)" -eq 6
+      - uses: pypa/gh-action-pypi-publish@release/v1

@@ -17,6 +17,10 @@ Install via pip:
 pip install npids
 ```
 
+Prebuilt wheels are available for Linux (x86_64, aarch64, musl x86_64), macOS (x86_64, arm64) and
+Windows (x86_64), for CPython 3.9 and later. Other platforms build from source, which needs a Rust
+toolchain.
+
 Build a lookup:
 
 ```python
@@ -82,10 +86,17 @@ Lookup.build(ids, path, meta={'dataset': 'msmarco-passage'})
 Lookup(path).meta # -> {'dataset': 'msmarco-passage'}
 ```
 
-### Files from npids < 0.2
+### Files from npids 0.1
 
-`Lookup(path)` still opens files written by older versions (as a `npids.legacy.Lookup`). They can't
-be appended to; convert them with `npids.upgrade(path)`.
+npids 1.0 writes a new file format (v2). `Lookup(path)` still opens files written by npids 0.x (as a
+read-only `npids.legacy.Lookup`), so existing files keep working without changes. They can't be
+appended to, and lookups are faster on v2 files. Convert them with `npids.upgrade`:
+
+```python
+import npids
+npids.upgrade('path/to/lookup.npids')                   # in place
+npids.upgrade('old.npids', new_path='new.npids')         # or to a new file
+```
 
 For large batches, `lookup._reader.get_many_raw(idxs)` returns the IDs as an Arrow-style `(offsets, data)`
 pair without creating a Python object per ID (e.g. for `pyarrow.StringArray.from_buffers`).
@@ -106,25 +117,25 @@ The core is written in Rust. The file format is specified in [FORMAT.md](FORMAT.
 
 ## Benchmarks
 
-`bench/compare.py` builds each sample in `test/samples` with npids 0.1 (format v1) and 0.2 (format
+`bench/compare.py` builds each sample in `test/samples` with npids 0.1 (format v1) and 1.0 (format
 v2), and times 10k random lookups with a warm cache (Apple M3).
 
 | sample | IDs | version | build | size | fwd 10k | inv 10k |
 |---|---:|---|---:|---:|---:|---:|
 | msmarco-passage (`0`, `1`, ...) | 8.8M | 0.1 | 3.45s | 206B | 3.1ms | 4.9ms |
-| | | 0.2 | 1.37s | 9.8KB | 0.8ms | 1.4ms |
+| | | 1.0 | 1.37s | 9.8KB | 0.8ms | 1.4ms |
 | msmarco-document (`D1555982`, ...) | 3.2M | 0.1 | 3.65s | 40.5MB | 4.1ms | 7.8ms |
-| | | 0.2 | 1.28s | 18.1MB | 1.0ms | 1.4ms |
+| | | 1.0 | 1.28s | 18.1MB | 1.0ms | 1.4ms |
 | neuclir/1/fa (UUIDs) | 2.2M | 0.1 | 4.72s | 58.6MB | 10.5ms | 17.7ms |
-| | | 0.2 | 1.23s | 39.2MB | 1.6ms | 4.6ms |
+| | | 1.0 | 1.23s | 39.2MB | 1.6ms | 4.6ms |
 | beir/fever (Wikipedia titles) | 5.4M | 0.1 | 10.15s | 1.1GB | 4.3ms | 12.1ms |
-| | | 0.2 | 2.58s | 137.1MB | 1.5ms | 2.2ms |
+| | | 1.0 | 2.58s | 137.1MB | 1.5ms | 2.2ms |
 | beir/dbpedia-entity | 4.6M | 0.1 | 8.03s | 833.1MB | 4.9ms | 14.3ms |
-| | | 0.2 | 2.34s | 120.6MB | 1.6ms | 3.1ms |
+| | | 1.0 | 2.34s | 120.6MB | 1.6ms | 3.1ms |
 | disks45/nocr | 528k | 0.1 | 0.39s | 10.7MB | 6.2ms | 11.2ms |
-| | | 0.2 | 0.21s | 5.3MB | 1.2ms | 1.7ms |
+| | | 1.0 | 0.21s | 5.3MB | 1.2ms | 1.7ms |
 | cord19 | 193k | 0.1 | 0.08s | 3.2MB | 2.0ms | 4.0ms |
-| | | 0.2 | 0.08s | 2.7MB | 0.8ms | 1.1ms |
+| | | 1.0 | 0.08s | 2.7MB | 0.8ms | 1.1ms |
 
 ## Development
 

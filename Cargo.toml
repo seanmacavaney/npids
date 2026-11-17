@@ -1,10 +1,12 @@
 [package]
 name = "npids"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2024"
 description = "Time- and space-efficient bi-directional lookups for identifiers"
 license = "MPL-2.0"
 repository = "https://github.com/seanmacavaney/npids"
+readme = "README.md"
+exclude = ["/test/samples", "/bench", "/.github"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
