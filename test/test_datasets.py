@@ -37,7 +37,7 @@ class TestDatasets(unittest.TestCase):
         self._test_dataset('hexsamples.txt.gz')
 
     def _test_dataset(self, file, invalid_docnos=None):
-        with gzip.open(f'{os.path.dirname(__file__)}/samples/{file}', 'rt') as fin:
+        with gzip.open(f'{os.path.dirname(__file__)}/samples/{file}', 'rt', encoding='utf-8') as fin:
             docnos = [d.strip() for d in fin]
         duplicates = set(did for did, count in Counter(docnos).items() if count > 1)
         doc_idxs = np.arange(len(docnos))
