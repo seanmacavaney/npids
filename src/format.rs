@@ -7,7 +7,7 @@ use crate::{Error, Result};
 pub const MAGIC: &[u8; 8] = b"NPIDSv2\n";
 pub const MANIFEST_MAGIC: &[u8; 8] = b"NPIDMNFT";
 pub const MAJOR: u16 = 2;
-pub const MINOR: u16 = 0;
+pub const MINOR: u16 = 1;
 pub const HEADER_LEN: usize = 80;
 pub const SLOT_OFFSETS: [usize; 2] = [16, 48];
 const MANIFEST_HEADER: usize = 80;

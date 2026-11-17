@@ -108,8 +108,10 @@ pair without creating a Python object per ID (e.g. for `pyarrow.StringArray.from
 
 IDs are stored in fixed-size chunks (65,536 IDs by default). Each chunk picks a *template* that all of
 its IDs match, such as `D{dec}`, `{hex:8}-{hex:4}-{hex:4}-{hex:4}-{hex:12}` or `doc-{dec:5}`, and
-stores only the template's fields, compressed as constants, arithmetic sequences or bit-packed
-integers. IDs that don't follow a pattern are stored as plain strings (`{str}`).
+stores only the template's fields, compressed as constants, arithmetic sequences, runs of arithmetic
+sequences (like ClueWeb22's `clueweb22-en0000-03-08290`, whose last field restarts at 0 for every
+source file) or bit-packed integers. IDs that don't follow a pattern are stored as plain strings
+(`{str}`).
 
 Inverse lookups use the same templates where they can: when IDs are in increasing order (like
 `0, 1, 2, ...` or sorted docnos), finding an ID is a binary search over the forward data, at no extra

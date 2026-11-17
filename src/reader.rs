@@ -1,6 +1,6 @@
 //! Reading v2 files through a memory map.
 
-use crate::chunk::{ChunkInfo, ENC_CONST, ENC_PLAIN, ENC_SEQ};
+use crate::chunk::{ChunkInfo, ENC_CONST, ENC_PLAIN, ENC_RUNS, ENC_SEQ};
 use crate::format::{self, Manifest, UNIT_DERIVED, UNIT_PHF};
 use crate::phf::PhfView;
 use crate::template::Val;
@@ -54,6 +54,13 @@ pub(crate) struct Arith {
     base: u64,
     first: u64,
     step: u64,
+}
+
+/// Where a key can be in a chunk with a run table (see `Reader::run_position`): at one index, or
+/// somewhere in `[a, b)` (empty if nowhere).
+enum RunPos {
+    At(u64),
+    Within(u64, u64),
 }
 
 pub(crate) struct Unit {
@@ -288,6 +295,12 @@ impl Reader {
             Some(pos) => pos.map(|j| (ci << bits) + j).filter(|&idx| idx >= start && idx < end),
             None => {
                 let (mut lo, mut hi) = (start, end);
+                if let Some(r) = self.run_position(ci as usize, tid, &q, start, end, buf)? {
+                    match r {
+                        RunPos::At(idx) => (lo, hi) = (idx, idx + 1),
+                        RunPos::Within(a, b) => (lo, hi) = (a, b),
+                    }
+                }
                 let mut found = None;
                 while lo < hi {
                     let mid = lo + (hi - lo) / 2;
@@ -387,6 +400,55 @@ impl Reader {
         }
         // All fields constant: strictly increasing keys mean the chunk has a single ID here.
         Ok(Some(Some(0)))
+    }
+
+    /// For a chunk with template `tid` whose RUNS fields share one run table, narrow the search for key
+    /// `q` within `[start, end)` (absolute indices with strictly increasing keys) to one run, then to
+    /// one position if the run's keys are arithmetic in their first changing field. `None` if the chunk
+    /// does not have that shape.
+    fn run_position(&self, ci: usize, tid: u32, q: &[Val], start: u64, end: u64, buf: &mut Vec<u8>) -> Result<Option<RunPos>> {
+        let info = self.chunk(ci)?;
+        if info.template_id != tid {
+            return Ok(None);
+        }
+        let Some(table) = info.fields.iter().find(|f| f.enc == ENC_RUNS) else { return Ok(None) };
+        if info.fields.iter().any(|f| (f.enc == ENC_RUNS && f.data != table.data) || !matches!(f.enc, ENC_CONST | ENC_RUNS)) {
+            return Ok(None);
+        }
+        let file: &[u8] = &self.mmap;
+        let base = (ci as u64) << self.manifest.chunk_bits;
+        let (ja, jb) = ((start - base) as usize, (end - base) as usize);
+        let n = table.p1 as usize;
+        let run_start = |r: usize| info.run_start(file, table, r);
+        let (ra, rb) = (info.run_of(file, table, ja), info.run_of(file, table, jb - 1));
+        // The last run in [ra, rb] whose first key (clipped to [ja, jb)) is <= q.
+        let (mut lo, mut hi) = (ra + 1, rb + 1);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.cmp_key(base + run_start(mid) as u64, tid, q, buf)? == Ordering::Greater {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        let r = lo - 1;
+        let j0 = run_start(r).max(ja);
+        let j1 = if r + 1 < n { run_start(r + 1).min(jb) } else { jb };
+        // Within the run, fields before the first one with a non-zero step are constant, and keys
+        // increase strictly, so that field (if its step is positive) pins down the position.
+        for (k, f) in info.fields.iter().enumerate() {
+            if f.enc == ENC_CONST || f.p0 == 0 {
+                continue;
+            }
+            let (Val::Int(x), true) = (q[k], (f.p0 as i64) > 0) else { break };
+            let v0 = info.int(file, k, j0);
+            if x < v0 || !(x - v0).is_multiple_of(f.p0) {
+                return Ok(Some(RunPos::Within(0, 0)));
+            }
+            let j = (x - v0) / f.p0;
+            return Ok(Some(if j < (j1 - j0) as u64 { RunPos::At(base + j0 as u64 + j) } else { RunPos::Within(0, 0) }));
+        }
+        Ok(Some(RunPos::Within(base + j0 as u64, base + j1 as u64)))
     }
 
     /// Compare the key at `idx` (under template `tid`) with `q`.

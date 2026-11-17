@@ -33,7 +33,7 @@ in the header.
 |-------:|-----:|-------|
 | 0  | 8  | magic `"NPIDSv2\n"` |
 | 8  | 2  | `major` = 2 |
-| 10 | 2  | `minor` = 0 |
+| 10 | 2  | `minor` = 1 |
 | 12 | 4  | `flags` = 0 (reserved) |
 | 16 | 32 | commit slot A |
 | 48 | 32 | commit slot B |
@@ -54,6 +54,17 @@ Detecting the version: a file starting with `"NPIDSv2\n"` is v2. A file whose fi
 
 Readers MUST refuse `major > 2`. They MAY read files with a higher `minor`, but MUST refuse any chunk
 encoding, field kind or inverse-unit kind they do not know.
+
+Minor versions:
+
+- **2.0** (npids 1.0.0, 1.0.1): column encodings 0–3.
+- **2.1** (npids 1.1): adds column encoding 4, `RUNS`. Files without `RUNS` columns are unchanged.
+
+Writers put their own `minor` in the header of a file they create; appending never rewrites the header,
+so a file created as 2.0 can hold `RUNS` chunks appended later. The header's `minor` is therefore only a
+hint: what a reader must support is decided per chunk, by its encodings. A 2.0 reader opens a file with
+`RUNS` columns, then refuses (with an "unknown column encoding 4" error) each lookup that touches such a
+chunk; it never misreads one.
 
 ### Opening
 
@@ -243,8 +254,40 @@ Value of position `j` (`0 <= j < count`) for each encoding:
 | 1 | `SEQ` | integer | `p0 + j * (i64)p1`, wrapping in u64 | none |
 | 2 | `FOR` | integer | `p0 +` the `bits` bits at `j * stride + bit_off` | packed bit stream |
 | 3 | `PLAIN` | `STR` | `blob[off[j] .. off[j+1]]` | `u32 off[count+1]`, then `blob` |
+| 4 | `RUNS` | integer | `vals[r * width + slot] + (j - starts[r]) * (i64)p0`, wrapping in u64 | run table (below) |
 
 `PLAIN` blob offsets are relative to the start of the blob, which immediately follows `off`.
+
+### Runs
+
+`RUNS` (since 2.1) stores a field that is piecewise arithmetic: the chunk splits into `n` runs, and
+within each run the field steps by the same `p0` (as `i64`; 0 makes it piecewise constant). It is meant
+for IDs like ClueWeb22's `clueweb22-en0000-03-08290`, where the last field counts up within a source
+file and restarts at 0 when the middle field increments: one chunk holds a few such runs, so storing
+each run's start costs bytes per chunk instead of bits per ID.
+
+For a `RUNS` field, the descriptor's `p0` is the step, `p1` is the number of runs `n`
+(`1 <= n <= count`), `stride` is the run table's `width` (number of fields it holds; 0 means 1), and
+`bit_off` is this field's `slot` in it (`slot < width`). `bits` is 0. `data_off` points to the run
+table:
+
+```
+u32 starts[n]              first position of each run: starts[0] = 0, strictly increasing, < count
+zero padding to 8 bytes
+u64 vals[n * width]        vals[r * width + slot]: the slot's field value at position starts[r]
+```
+
+`data_len` is at least `ceil8(4 * n) + 8 * n * width`. Position `j` is in run `r`, the last run with
+`starts[r] <= j` (a binary search over `starts`). Readers MUST reject a run table whose `starts` are not
+as above.
+
+Several `RUNS` fields of a chunk may share one run table (and its `starts`), like `FOR` fields sharing a
+bit stream: their descriptors then have the same `data_off`, `data_len`, `p1` and `stride`, and different
+`slot`s. Each field still has its own step. A run of a shared table need not be a maximal run of every
+field in it (a field that does not change at a breakpoint simply repeats its value).
+
+When every non-constant field of a chunk is `RUNS` in one shared table, keys within a run differ only by
+the steps, so an inverse lookup (`DERIVED`) can binary-search the runs and then compute the position.
 
 Several `FOR` fields of a chunk may share one bit stream, stored row by row: each row holds one value of
 every such field, `stride` bits in all, with the field's value at `bit_off` within the row. Their
@@ -252,7 +295,7 @@ descriptors then have the same `data_off`, `data_len` and `stride`, and `bit_off
 This puts all of an ID's fields next to each other, so a random lookup reads one place instead of one
 per field. A `FOR` field with its own stream has `stride = 0` (meaning `bits`) and `bit_off = 0`.
 
-Encodings 4–15 are reserved (for example, FSST-compressed strings).
+Encodings 5–15 are reserved (for example, FSST-compressed strings).
 
 ### Bit packing
 

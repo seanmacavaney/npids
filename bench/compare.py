@@ -1,14 +1,18 @@
 """Compare npids v2 with the legacy (v1) format on the test samples.
 
 Usage: python bench/compare.py [sample ...]   (from the repo root, with npids installed)
-Reports build time, file size, and the time for 10k random forward / inverse lookups (warm cache).
+Reports build time, file size, and the time for 10k random forward / inverse lookups (warm cache,
+best of 5), plus `get_many_raw` for v2.
+`cw22` is a synthetic sample of 2^24 ClueWeb22-style docnos (bench/cw22.py), not a file in test/samples.
 """
 import gzip, os, sys, tempfile, time
 import numpy as np
 import npids
 from npids import legacy
 
-SAMPLES = sys.argv[1:] or sorted(f[:-7] for f in os.listdir('test/samples') if f.endswith('.txt.gz'))
+SAMPLES = sys.argv[1:] or sorted(f[:-7] for f in os.listdir('test/samples') if f.endswith('.txt.gz')) + ['cw22']
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cw22 import cw22_ids
 
 def fmt_size(n):
     for unit in ['B', 'KB', 'MB', 'GB']:
@@ -16,15 +20,21 @@ def fmt_size(n):
             return f'{n:.1f}{unit}' if unit != 'B' else f'{n}B'
         n /= 1024
 
-def timed(fn):
-    t = time.perf_counter(); r = fn(); return time.perf_counter() - t, r
+def timed(fn, repeat=1):
+    best = float('inf')
+    for _ in range(repeat):
+        t = time.perf_counter(); r = fn(); best = min(best, time.perf_counter() - t)
+    return best, r
 
 rng = np.random.default_rng(0)
-print(f'| sample | n | system | build | size | fwd 10k | inv 10k |')
-print(f'|---|---:|---|---:|---:|---:|---:|')
+print(f'| sample | n | system | build | size | fwd 10k | raw 10k | inv 10k |')
+print(f'|---|---:|---|---:|---:|---:|---:|---:|')
 for name in SAMPLES:
-    with gzip.open(f'test/samples/{name}.txt.gz', 'rt') as f:
-        ids = [l.rstrip('\n') for l in f]
+    if name == 'cw22':
+        ids = cw22_ids(1 << 24)
+    else:
+        with gzip.open(f'test/samples/{name}.txt.gz', 'rt', encoding='utf-8') as f:
+            ids = [l.rstrip('\n') for l in f]
     idx = rng.integers(0, len(ids), 10_000)
     qs = [ids[i] for i in idx]
     with tempfile.TemporaryDirectory() as d:
@@ -36,9 +46,10 @@ for name in SAMPLES:
             tb, _ = timed(lambda: build(p))
             lk = open_(p)
             lk.fwd[idx]; lk.inv[qs]  # warm
-            tf, res_f = timed(lambda: lk.fwd[idx])
-            ti, res_i = timed(lambda: lk.inv[qs])
+            tf, res_f = timed(lambda: lk.fwd[idx], 5)
+            raw = f'{timed(lambda: lk._reader.get_many_raw(idx), 5)[0]*1000:.1f}ms' if system == 'v2' else '-'
+            ti, res_i = timed(lambda: lk.inv[qs], 5)
             ok = all(a == ids[i] for a, i in zip(res_f, idx))
-            print(f'| {name} | {len(ids):,} | {system} | {tb:.2f}s | {fmt_size(os.path.getsize(p))} | {tf*1000:.1f}ms | {ti*1000:.1f}ms |{"" if ok else " WRONG"}', flush=True)
+            print(f'| {name} | {len(ids):,} | {system} | {tb:.2f}s | {fmt_size(os.path.getsize(p))} | {tf*1000:.1f}ms | {raw} | {ti*1000:.1f}ms |{"" if ok else " WRONG"}', flush=True)
             if system == 'v2':
                 print('\n'.join('    ' + l for l in lk.describe().splitlines()[1:]), file=sys.stderr)
