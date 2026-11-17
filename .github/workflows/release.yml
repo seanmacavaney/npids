@@ -116,7 +116,7 @@ jobs:
         with:
           name: wheel-musllinux-x86_64
           path: dist
-      - run: python -m pip install --only-binary=:all: numpy pytest
+      - run: 'python -m pip install --only-binary=:all: numpy pytest'
       - run: python -m pip install --no-index --find-links dist npids
       - run: |
           python -c "import npids, sys; print(npids.__version__, npids.__file__, sys.version)"
